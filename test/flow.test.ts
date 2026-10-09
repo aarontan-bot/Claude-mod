@@ -5,7 +5,7 @@ const ROOT = '/repo'
 const HEAD = 'a'.repeat(40)
 
 /** A project on an in-memory disk with git answering from it. */
-function world(on: On) {
+function world(on: On, { isPaneShown = true } = {}) {
   const files = new Map<string, string>([
     [`${ROOT}/src/auth/login.ts`, 'export function login() {}\n'.repeat(20)],
     [`${ROOT}/src/api/routes.ts`, 'export const routes = []\n'],
@@ -48,7 +48,7 @@ function world(on: On) {
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', () => ({ value: isPaneShown ? { isPlaced: true as const } : { isPlaced: false as const, reason: 'no surface' } }))
   on('prompt.submit', ($, e) => {
     prompts.push(e.text)
     return { text: e.text }
@@ -119,10 +119,10 @@ test('map, plan, approve, edit, check, complete', async ($, on) => {
   const sneaky = await $.command.run({
     command: 'archgate',
     args: 'approve',
-    origin: { kind: 'sdk' },
+    origin: { kind: 'plugin', name: 'other' },
     presentation: { isFullscreen: false, columns: 80 },
   })
-  expect(sneaky.text).toContain('only the person')
+  expect(sneaky.text).toContain('不算数')
 
   // the person approves from the pane
   const pane = await $.ui.mount({ plugin: 'archgate', surface: 'terminal', component: 'Pane', requestId: 'archgate', props: {} as never })
@@ -221,4 +221,23 @@ test('the pane draws on terminal and desktop', async ($, on) => {
     expect(await pane.find({ key: 'reject' })).toBeDefined()
     await pane.unmount()
   }
+})
+
+test('a client without a pane: text status and approval from the app', async ($, on) => {
+  world(on, { isPaneShown: false })
+  await $.session.start({ cwd: ROOT, surface: null, isInteractive: false })
+  await $.tool.call({ tool: 'mcp__archgate__archgate_map', ...MAP })
+  const planned = await $.tool.call({ tool: 'mcp__archgate__archgate_plan', summary: '限流登录接口', modules: ['auth'], checks: ['npm test'] })
+  expect(String(planned.result)).toContain('type /archgate approve')
+
+  const app = { origin: { kind: 'sdk' as const }, presentation: { isFullscreen: false, columns: 80 } }
+  const status = await $.command.run({ command: 'archgate', args: 'status', ...app })
+  expect(status.text).toContain('计划 #1 · 待确认')
+  expect(status.text).toContain('可能受影响（调用方）: api')
+  expect(status.text).toContain('/archgate approve')
+  expect(status.text).toContain('没有显示 archgate 面板')
+
+  const approved = await $.command.run({ command: 'archgate', args: 'approve', ...app })
+  expect(approved.text).toContain('计划 #1 已确认')
+  expect((await $.tool.call(edit('src/auth/login.ts'))).deny).toBeUndefined()
 })

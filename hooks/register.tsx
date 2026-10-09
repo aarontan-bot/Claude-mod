@@ -283,6 +283,51 @@ async function guard($: $, path: string, run: () => Promise<ToolCallResult>): Pr
   return { ...ran, context: [...(ran.context ?? []), `archgate: ${decision.reason}`] }
 }
 
+/** The pane's content as plain text, for clients that draw no pane. */
+async function describe($: $): Promise<string> {
+  const [map, plan, stale, isPaused] = await Promise.all([
+    read($, mapAtom),
+    read($, planAtom),
+    read($, staleAtom),
+    read($, pausedAtom),
+  ])
+  if (map === null) return `${t.title}\n${t.noMap}`
+  const lines = [t.title, t.map(map.project, map.revision, map.modules.length)]
+  if (isPaused) lines.push(t.paused)
+  if (stale !== null) lines.push(t.stale(stale.changedFiles, stale.modules.join(', ') || '—'))
+  if (plan === null) return [...lines, '', t.noPlan].join('\n')
+
+  const phase = plan.status === 'approved' && plan.touched.length > 0 ? t.editing : t.status[plan.status]
+  lines.push('', `${t.plan(plan.id)} · ${phase}`, plan.summary, `${t.scope}: ${plan.modules.join(', ')}`)
+  if (plan.files.length > 0) lines.push(plan.files.join('  '))
+  if (plan.impact.length > 0) lines.push(`${t.impact}: ${plan.impact.join(', ')}`)
+  for (const f of plan.touched) {
+    const tag = f.isBlocked ? ` ${t.blocked}` : f.isInScope ? '' : ` ${t.outOfScope}`
+    lines.push(`${f.isInScope ? '●' : '✗'} ${f.path}${tag}`)
+  }
+  if (plan.checks.length > 0) {
+    lines.push(`${t.checks}:`)
+    for (const c of plan.checks) {
+      const runs = plan.checkRuns.filter(r => r.command.includes(c))
+      const last = runs[runs.length - 1]
+      lines.push(`  ${last === undefined ? '○' : last.isOk ? '✓' : '✗'} ${c}`)
+    }
+  }
+  const missing = unverified(plan)
+  if (plan.status === 'completed' && missing.length > 0) lines.push(t.unverified(missing.join(', ')))
+  if (plan.status === 'pending' || plan.status === 'rejected') lines.push('', t.howToApprove)
+  return lines.join('\n')
+}
+
+/** Opens the pane and remembers whether any client drew it. */
+async function openPane($: $): Promise<boolean> {
+  const opened = await $.ui.open({ id: PANE, title: 'archgate' }).catch(() => ({ isPlaced: false as const }))
+  return opened.isPlaced
+}
+
+/** Commands typed by the person: at the terminal, through Remote Control, or by the app hosting the session. */
+const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
+
 export const register: Register = (on, options) => {
   mode = options.mode === 'auto' ? 'auto' : 'on-demand'
   enforcement = options.enforcement === 'warn' || options.enforcement === 'off' ? options.enforcement : 'block'
@@ -433,12 +478,15 @@ export const register: Register = (on, options) => {
     if (isRefinement) {
       lines.push(`Plan #${id} stays within approved plan #${previous.id}, so it is approved. Go ahead.`)
     } else {
-      void $.ui.open({ id: PANE, title: 'archgate' }).catch(() => undefined)
+      const isShown = await openPane($)
       $.ui.toast(t.toastPlan(id))
       lines.push(
         `Plan #${id} is waiting for the user's approval (archgate pane, or /archgate approve).`,
         'End your turn now: summarise the plan for the user and ask them to approve it. Edits are refused until they do.',
       )
+      if (!isShown) {
+        lines.push('The archgate pane is not shown in this client: tell the user to type /archgate approve (or /archgate reject <reason>), and /archgate to see the plan.')
+      }
     }
     if (plan.impact.length > 0) {
       lines.push(`Callers that may be affected and are not in scope: ${plan.impact.join(', ')}. Mention them, and check them during verification.`)
@@ -507,10 +555,11 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'archgate' }, async ($, e) => {
     const [verb = '', ...rest] = e.args.trim().split(/\s+/)
-    const isPerson = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
+    const kind = e.origin?.kind ?? 'unknown'
+    const isPerson = PERSON_ORIGINS.has(kind)
 
     if (verb === 'approve' || verb === 'reject' || verb === 'on' || verb === 'off') {
-      if (!isPerson) return { text: 'archgate: only the person at the prompt can do that.' }
+      if (!isPerson) return { text: t.notPerson(kind) }
     }
     switch (verb) {
       case 'approve':
@@ -529,14 +578,11 @@ export const register: Register = (on, options) => {
         const map = await read($, mapAtom)
         return { text: map === null ? t.noMap : t.reportWritten(`${await cwd($)}/${REPORT_FILE}`) }
       }
-      case 'status': {
-        const [map, plan] = await Promise.all([read($, mapAtom), read($, planAtom)])
-        const text = contextSection({ map, plan, stale: await read($, staleAtom), mode, enforcement, isPaused: await read($, pausedAtom) })
-        return { text }
+      default: {
+        const isShown = await openPane($)
+        const text = await describe($)
+        return { text: isShown ? text : `${text}\n\n${t.paneHidden}` }
       }
-      default:
-        await $.ui.open({ id: PANE, title: 'archgate' })
-        return { text: lang === 'zh' ? 'archgate 面板已打开。' : 'archgate pane opened.' }
     }
   })
 

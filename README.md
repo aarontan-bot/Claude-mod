@@ -38,14 +38,21 @@ Claude 会：
 4. 改代码时，范围外的文件会被拒绝写入；Claude 必须重新提交更大的计划并再次取得确认。
 5. 跑完检查后调用 `archgate_complete` 收尾。没跑过、或最后一次失败的检查会标记为 **未验证**。
 
+### 在网页或 App 的云端会话里
+
+面板、状态栏和提示由显示会话的客户端绘制，claude.ai 网页和 App 可能都不显示。这时：
+
+- 输入 `/archgate` 或 `/archgate status`，面板里的内容会以文字形式显示在对话里。
+- 用 `/archgate approve` 确认，用 `/archgate reject 原因` 驳回。App 发来的命令同样算你本人的操作；由其他插件或 Claude 发起的命令不算数。
+
 ### 命令
 
 | 命令 | 作用 |
 | --- | --- |
-| `/archgate` | 打开面板 |
+| `/archgate` | 打开面板，并以文字显示面板内容 |
 | `/archgate approve` | 确认当前计划（只有你本人在输入框里输入才算数，Claude 无法替你确认） |
 | `/archgate reject <原因>` | 驳回计划，原因会告诉 Claude |
-| `/archgate status` | 查看当前地图和计划摘要 |
+| `/archgate status` | 以文字显示面板内容 |
 | `/archgate report` | 重新生成 HTML 报告 |
 | `/archgate off` / `on` | 本会话暂停 / 恢复闸门 |
 
