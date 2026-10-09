@@ -1,0 +1,13 @@
+{
+  "name": "claude-mod",
+  "description": "aarontan's Claude Code mods.",
+  "owner": {
+    "name": "aarontan"
+  },
+  "plugins": [
+    {
+      "name": "archgate",
+      "source": "./"
+    }
+  ]
+}

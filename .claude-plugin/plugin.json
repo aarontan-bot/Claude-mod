@@ -1,0 +1,31 @@
+{
+  "name": "archgate",
+  "version": "0.1.0",
+  "description": "Architecture map + plan gate: the AI maps modules, declares a scope, you approve it, and edits outside that scope are blocked and observed.",
+  "author": { "name": "aarontan" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Trigger mode",
+      "description": "on-demand: the gate holds only once a plan is submitted. auto: every code edit needs an approved plan.",
+      "default": "on-demand",
+      "options": ["on-demand", "auto"]
+    },
+    "enforcement": {
+      "type": "string",
+      "title": "Enforcement",
+      "description": "block: refuse edits outside the approved scope. warn: allow them but flag them. off: observe only.",
+      "default": "block",
+      "options": ["block", "warn", "off"]
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the pane, status line and report.",
+      "default": "zh",
+      "options": ["zh", "en"]
+    }
+  }
+}
