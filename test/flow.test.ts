@@ -4,8 +4,14 @@ import type { On } from 'claude-code'
 const ROOT = '/repo'
 const HEAD = 'a'.repeat(40)
 
+const hash = (text: string) => {
+  let h = 5381
+  for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0
+  return h.toString(16)
+}
+
 /** A project on an in-memory disk with git answering from it. */
-function world(on: On, { isPaneShown = true } = {}) {
+function world(on: On, { isPaneShown = true, store = new Map<string, unknown>() } = {}) {
   const files = new Map<string, string>([
     [`${ROOT}/src/auth/login.ts`, 'export function login() {}\n'.repeat(20)],
     [`${ROOT}/src/api/routes.ts`, 'export const routes = []\n'],
@@ -15,9 +21,17 @@ function world(on: On, { isPaneShown = true } = {}) {
   const toasts: string[] = []
   const prompts: string[] = []
   const edits: string[] = []
+  const runs: string[][] = []
+  const dirty = new Set<string>()
   let status: string | undefined
 
   mock.clock(on, { now: Date.parse('2026-10-09T10:00:00Z') })
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('fs.exists', ($, e) => ({ value: files.has(e.path) }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: ROOT }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__archgate__${e.name}` } }))
@@ -31,14 +45,30 @@ function world(on: On, { isPaneShown = true } = {}) {
     return { value: undefined }
   })
   on('process.run', ($, e) => {
-    const args = e.argv.slice(1).join(' ')
-    const stdout =
-      args === 'rev-parse HEAD'
-        ? `${HEAD}\n`
-        : args === 'ls-files'
-          ? [...files.keys()].filter(f => !f.includes('.archgate')).map(f => f.slice(ROOT.length + 1)).join('\n')
-          : ''
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    const args = e.argv.slice(1)
+    runs.push([...args])
+    const answer = (exitCode: number, stdout = '') => ({
+      value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    })
+    const tracked = () => [...files.keys()].filter(f => !f.includes('.archgate')).map(f => f.slice(ROOT.length + 1))
+    switch (args[0]) {
+      case 'rev-parse':
+        return answer(0, args[1] === '--git-path' ? '.git/archgate-index\n' : `${HEAD}\n`)
+      case 'ls-files':
+        return args[1] === '--error-unmatch' ? answer(tracked().includes(args[3] ?? '') ? 0 : 1) : answer(0, tracked().join('\n'))
+      case 'status':
+        return answer(0, [...dirty].map(p => ` M ${p}\0`).join(''))
+      case 'hash-object': {
+        const paths = (e.init?.stdin ?? '').split('\n').filter(Boolean)
+        return answer(0, paths.map(p => hash(files.get(`${ROOT}/${p}`) ?? '')).join('\n') + '\n')
+      }
+      case 'write-tree':
+        return answer(0, 'tree1\n')
+      case 'commit-tree':
+        return answer(0, 'snap1\n')
+      default:
+        return answer(0)
+    }
   })
   on('ui.status', ($, e) => {
     status = e.text
@@ -57,11 +87,19 @@ function world(on: On, { isPaneShown = true } = {}) {
     edits.push(e.file_path)
     return { result: { filePath: e.file_path } }
   })
-  on('tool.call', { tool: 'Bash' }, ($, e) =>
-    e.command.includes('lint') ? { isError: true, result: 'lint failed', text: 'exit 1' } : { result: { stdout: 'ok', stderr: '', interrupted: false } },
-  )
+  on('tool.call', { tool: 'Bash' }, ($, e) => {
+    // `write <path>` stands for any command that changes a file
+    const written = /^write (\S+)/.exec(e.command)?.[1]
+    if (written !== undefined) {
+      files.set(`${ROOT}/${written}`, `changed by ${e.command}`)
+      dirty.add(written)
+    }
+    return e.command.includes('lint')
+      ? { isError: true, result: 'lint failed', text: 'exit 1' }
+      : { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
 
-  return { files, toasts, prompts, edits, status: () => status }
+  return { files, toasts, prompts, edits, runs, store, status: () => status }
 }
 
 const MAP = {
@@ -240,4 +278,82 @@ test('a client without a pane: text status and approval from the app', async ($,
   const approved = await $.command.run({ command: 'archgate', args: 'approve', ...app })
   expect(approved.text).toContain('计划 #1 已确认')
   expect((await $.tool.call(edit('src/auth/login.ts'))).deny).toBeUndefined()
+})
+
+const APP = { origin: { kind: 'sdk' as const }, presentation: { isFullscreen: false, columns: 80 } }
+
+test('a shell command that writes outside the plan is caught', async ($, on) => {
+  const w = world(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__archgate__archgate_map', ...MAP })
+  await $.tool.call({ tool: 'mcp__archgate__archgate_plan', summary: 'x', modules: ['auth'], checks: ['npm test'] })
+  await $.command.run({ command: 'archgate', args: 'approve', ...APP })
+
+  const inside = await $.tool.call({ tool: 'Bash', command: 'write src/auth/login.ts' })
+  expect(inside.context ?? []).toEqual([])
+
+  const outside = await $.tool.call({ tool: 'Bash', command: 'write src/db/index.ts' })
+  expect(outside.context?.join('\n')).toContain('changed files outside approved plan #1: src/db/index.ts')
+  expect(w.toasts.some(t => t.includes('命令改动了计划外的文件：src/db/index.ts'))).toBe(true)
+
+  const status = await $.command.run({ command: 'archgate', args: 'status', ...APP })
+  expect(status.text).toContain('✓ src/auth/login.ts（已修改（命令改动））')
+  expect(status.text).toContain('✗ src/db/index.ts（计划外（命令改动））')
+  expect(status.text).toContain('风险灯：高风险')
+
+  // a file already dirty and left alone by the next command is not reported again
+  const quiet = await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(quiet.context ?? []).toEqual([])
+})
+
+test('the plan and its numbering survive a new session', async ($, on) => {
+  const store = new Map<string, unknown>()
+  const saved = {
+    plan: {
+      id: 7, summary: '旧计划', modules: ['auth'], files: [], checks: ['npm test'], impact: ['api'],
+      status: 'approved', createdAt: '', touched: [], checkRuns: [],
+    },
+    seq: 7,
+  }
+  store.set(`plan:${ROOT}`, saved)
+  world(on, { store })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__archgate__archgate_map', ...MAP })
+
+  // the approved plan still holds the gate
+  expect((await $.tool.call(edit('src/db/index.ts'))).deny).toContain('outside approved plan #7')
+  const next = await $.tool.call({ tool: 'mcp__archgate__archgate_plan', summary: 'y', modules: ['db'] })
+  expect(String(next.result)).toContain('Plan #8')
+  expect((store.get(`plan:${ROOT}`) as { seq: number }).seq).toBe(8)
+})
+
+test('undo puts back every file the plan changed', async ($, on) => {
+  const w = world(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__archgate__archgate_map', ...MAP })
+  await $.tool.call({ tool: 'mcp__archgate__archgate_plan', summary: 'x', modules: ['auth', 'api'], checks: ['npm test'] })
+
+  // nothing to undo before approval
+  expect((await $.command.run({ command: 'archgate', args: 'undo', ...APP })).text).toContain('没有还原点')
+
+  await $.command.run({ command: 'archgate', args: 'approve', ...APP })
+  // the snapshot goes through a private index, never the person's own
+  const snap = w.runs.filter(r => ['read-tree', 'add', 'write-tree', 'commit-tree', 'update-ref'].includes(r[0] ?? ''))
+  expect(snap.map(r => r[0])).toEqual(['read-tree', 'add', 'write-tree', 'commit-tree', 'update-ref'])
+  expect(snap[4]?.[2]).toBe('snap1')
+
+  await $.tool.call(edit('src/auth/login.ts'))
+  await $.tool.call({ tool: 'Bash', command: 'write src/api/new.ts' })
+
+  // the model cannot undo
+  const sneaky = await $.command.run({ command: 'archgate', args: 'undo', origin: { kind: 'plugin', name: 'x' }, presentation: APP.presentation })
+  expect(sneaky.text).toContain('命令无效')
+
+  const undone = await $.command.run({ command: 'archgate', args: 'undo', ...APP })
+  expect(undone.text).toContain('已撤销计划 #1：2 个文件恢复')
+  expect(w.runs).toContainEqual(['restore', '--source=snap1', '--worktree', '--', 'src/auth/login.ts'])
+  expect(w.runs.some(r => r[0] === 'restore' || r[0] === 'clean' ? r.at(-1) === 'src/api/new.ts' : false)).toBe(true)
+
+  const status = await $.command.run({ command: 'archgate', args: 'status', ...APP })
+  expect(status.text).toContain('【已撤销】')
 })

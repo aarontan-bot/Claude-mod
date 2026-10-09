@@ -46,6 +46,33 @@ const zh = {
   youDo: '你要做的',
   partsCount: (n: number) => `${n} 个`,
   none: '无',
+  toastShell: (path: string) => `命令改动了计划外的文件：${path}`,
+  shellNote: '（命令改动）',
+
+  risk: {
+    title: '风险灯',
+    level: { green: '低风险', amber: '需要留意', red: '高风险' },
+    out: (n: number) => `有 ${n} 个文件改到了计划外。`,
+    failed: (list: string) => `检查没有通过：${list}。`,
+    wide: (n: number, total: number) => `这次要改 ${n} 个部件，占全部 ${total} 个的一半以上。`,
+    blocked: (n: number) => `Claude 试图改计划外的文件 ${n} 次，已被拦下。`,
+    core: (list: string) => `动到了核心部件：${list}。很多部件都依赖它。`,
+    impact: (list: string) => `可能连带影响：${list}。`,
+    noChecks: '没有安排改完后的检查。',
+    unmapped: (n: number) => `有 ${n} 个文件不属于任何部件。`,
+    stale: '架构图已过期，可能不准。',
+    small: '改动小，范围清楚，有检查。',
+  },
+
+  undo: {
+    none: '没有可以撤销的计划。',
+    noPoint: '这个计划没有还原点。只有你确认过的计划才能撤销。',
+    nothing: '这个计划还没有改动任何文件。',
+    done: (id: number, n: number) => `已撤销计划 #${id}：${n} 个文件恢复成确认前的样子。`,
+    failed: (list: string) => `这些文件没能恢复：${list}。`,
+    noGit: '这个项目没有用 git 管理，不能存还原点。',
+    hint: '改坏了可以输入 /archgate undo，把这个计划改过的文件全部恢复。',
+  },
 
   r: {
     head: '改代码前 · 检查单',
@@ -61,6 +88,7 @@ const zh = {
       unverified: '已完成，但没有验证',
       failed: '没有完成',
       cancelled: '已取消',
+      undone: '已撤销',
     },
     noPlanLede: 'Claude 改代码前，会先在这里交一份计划。',
     statusTitle: '当前状态',
@@ -176,6 +204,33 @@ const en: Strings = {
   youDo: 'Your action',
   partsCount: n => `${n}`,
   none: 'None',
+  toastShell: path => `A command changed a file outside the plan: ${path}`,
+  shellNote: ' (by a command)',
+
+  risk: {
+    title: 'Risk',
+    level: { green: 'Low risk', amber: 'Take care', red: 'High risk' },
+    out: n => `${n} files changed outside the plan.`,
+    failed: list => `Checks failed: ${list}.`,
+    wide: (n, total) => `The plan changes ${n} of ${total} parts, half or more of the project.`,
+    blocked: n => `Claude tried to change files outside the plan ${n} times. The gate blocked it.`,
+    core: list => `It changes core parts: ${list}. Many parts use them.`,
+    impact: list => `It can affect: ${list}.`,
+    noChecks: 'No check is planned after the change.',
+    unmapped: n => `${n} files belong to no part.`,
+    stale: 'The map is stale. It can be wrong.',
+    small: 'A small change with a clear scope and checks.',
+  },
+
+  undo: {
+    none: 'There is no plan to undo.',
+    noPoint: 'This plan has no restore point. Only approved plans can be undone.',
+    nothing: 'This plan has not changed any file.',
+    done: (id, n) => `Plan #${id} is undone: ${n} files are back to how they were before approval.`,
+    failed: list => `These files were not restored: ${list}.`,
+    noGit: 'This project does not use git, so there is no restore point.',
+    hint: 'If something breaks, type /archgate undo to put back every file this plan changed.',
+  },
 
   r: {
     head: 'Before code changes · Checklist',
@@ -191,6 +246,7 @@ const en: Strings = {
       unverified: 'Completed, not verified',
       failed: 'Not completed',
       cancelled: 'Cancelled',
+      undone: 'Undone',
     },
     noPlanLede: 'Before Claude changes code, it puts a plan here.',
     statusTitle: 'Status',

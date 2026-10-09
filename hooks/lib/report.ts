@@ -2,6 +2,7 @@ import type { ArchMap, Plan, Staleness } from '../../types'
 
 import { unverified } from './gate'
 import { strings, type Lang } from './i18n'
+import { assessRisk, type Risk, type RiskReason } from './risk'
 
 export type ActivityEntry = {
   at: string
@@ -169,16 +170,28 @@ function diagram(map: ArchMap, states: Map<string, ModuleState>, numbers: Map<st
   )
 }
 
-type Phase = 'noMap' | 'none' | 'pending' | 'rejected' | 'editing' | 'checking' | 'completed' | 'unverified' | 'failed' | 'cancelled'
+type Phase =
+  | 'noMap'
+  | 'none'
+  | 'pending'
+  | 'rejected'
+  | 'editing'
+  | 'checking'
+  | 'completed'
+  | 'unverified'
+  | 'failed'
+  | 'cancelled'
+  | 'undone'
 
 export function phaseOf(map: ArchMap | null, plan: Plan | null): Phase {
   if (map === null) return 'noMap'
   if (plan === null) return 'none'
   switch (plan.status) {
+    case 'cancelled':
+      return plan.undoneAt ? 'undone' : 'cancelled'
     case 'pending':
     case 'rejected':
     case 'failed':
-    case 'cancelled':
       return plan.status
     case 'approved':
       return plan.checkRuns.length > 0 ? 'checking' : 'editing'
@@ -190,11 +203,48 @@ export function phaseOf(map: ArchMap | null, plan: Plan | null): Phase {
 /** Which of the six steps is done, current, or still ahead. */
 function stepStates(phase: Phase): ('done' | 'now' | 'bad' | 'todo')[] {
   const at: Record<Phase, number> = {
-    noMap: 0, none: 1, pending: 2, rejected: 2, editing: 3, checking: 4, completed: 6, unverified: 5, failed: 5, cancelled: 2,
+    noMap: 0, none: 1, pending: 2, rejected: 2, editing: 3, checking: 4, completed: 6, unverified: 5, failed: 5, cancelled: 2, undone: 3,
   }
   const current = at[phase]
-  const isBad = phase === 'rejected' || phase === 'failed' || phase === 'unverified' || phase === 'cancelled'
+  const isBad = phase === 'rejected' || phase === 'failed' || phase === 'unverified' || phase === 'cancelled' || phase === 'undone'
   return [0, 1, 2, 3, 4, 5].map(i => (i < current ? 'done' : i === current ? (isBad ? 'bad' : 'now') : 'todo'))
+}
+
+/** One risk reason as a plain sentence. */
+export function riskText(reason: RiskReason, lang: Lang): string {
+  const r = strings(lang).risk
+  const list = (items: string[]) => items.join(lang === 'zh' ? '、' : ', ')
+  switch (reason.code) {
+    case 'out':
+      return r.out(reason.count)
+    case 'failed':
+      return r.failed(list(reason.checks))
+    case 'wide':
+      return r.wide(reason.count, reason.total)
+    case 'blocked':
+      return r.blocked(reason.count)
+    case 'core':
+      return r.core(list(reason.parts))
+    case 'impact':
+      return r.impact(list(reason.parts))
+    case 'noChecks':
+      return r.noChecks
+    case 'unmapped':
+      return r.unmapped(reason.count)
+    case 'stale':
+      return r.stale
+    case 'small':
+      return r.small
+  }
+}
+
+function riskCard(risk: Risk, lang: Lang): string {
+  const r = strings(lang).risk
+  return (
+    `<div class="risk ${risk.level}"><span class="lamp" aria-hidden="true"></span><div>` +
+    `<b>${esc(r.title)} · ${esc(r.level[risk.level])}</b>` +
+    `<ul>${risk.reasons.map(x => `<li>${esc(riskText(x, lang))}</li>`).join('')}</ul></div></div>`
+  )
 }
 
 const CSS = `
@@ -281,6 +331,10 @@ summary{cursor:pointer;padding:12px 20px;font-weight:600}
 details ul{list-style:none;margin:0;padding:0 20px 12px;display:grid;gap:8px;font-size:14px}
 details li span{color:var(--sub)}
 footer{color:var(--sub);font-size:13px;text-align:center}
+.risk{display:grid;grid-template-columns:22px 1fr;gap:12px;align-items:start;background:var(--card);border-radius:18px;padding:14px 20px;box-shadow:var(--shadow);margin-top:6px}
+.risk .lamp{width:16px;height:16px;border-radius:50%;margin-top:4px;background:var(--c);box-shadow:0 0 0 4px color-mix(in srgb,var(--c) 22%,transparent)}
+.risk.green{--c:var(--green)}.risk.amber{--c:var(--orange)}.risk.red{--c:var(--red)}
+.risk b{font-size:16px}.risk ul{margin:2px 0 0;padding-left:18px;color:var(--sub);font-size:15px}
 @media (max-width:720px){main{padding-top:36px;gap:36px}.steps{grid-template-columns:repeat(3,minmax(0,1fr));border-radius:18px}.terms{grid-template-columns:minmax(0,1fr)}.detail{grid-template-columns:minmax(0,1fr)}.row{flex-wrap:wrap}.row .v{text-align:left}}
 @media (prefers-reduced-motion:reduce){.edge,.node{transition:none}}
 `
@@ -331,7 +385,8 @@ export function renderReport(input: {
   const numbers = new Map(map.modules.map((m, i) => [m.id, i + 1]))
   const nameOf = (id: string) => map.modules.find(m => m.id === id)?.name ?? id
   const phase = phaseOf(map, plan)
-  const tone = phase === 'completed' ? 'ok' : ['rejected', 'failed', 'unverified', 'cancelled'].includes(phase) ? 'bad' : 'now'
+  const tone = phase === 'completed' ? 'ok' : ['rejected', 'failed', 'unverified', 'cancelled', 'undone'].includes(phase) ? 'bad' : 'now'
+  const risk = plan !== null ? riskCard(assessRisk(map, plan, stale), input.lang) : ''
 
   const steps = stepStates(phase)
     .map((s, i) => `<li class="${s}"${s === 'now' || s === 'bad' ? ' aria-current="step"' : ''}>${esc(t.steps[i] ?? '')}</li>`)
@@ -373,6 +428,9 @@ export function renderReport(input: {
     if (blocked > 0) warn(t.cautionBlocked(blocked))
     if (out.length - blocked > 0) warn(t.cautionWarned(out.length - blocked))
     if (plan.status === 'completed' && missing.length > 0) warn(t.cautionUnverified(missing.join('、')))
+    if (plan.status === 'approved' && plan.restorePoint) {
+      callouts.push(`<div class="callout info"><span class="ic">↺</span><div><p>${esc(all.undo.hint)}</p></div></div>`)
+    }
   } else {
     action = esc(t.actNone)
   }
@@ -389,7 +447,7 @@ export function renderReport(input: {
       ? `<section><h2>${esc(t.touchedTitle)}</h2><div class="group files">${plan.touched
           .map(f => {
             const cls = f.isInScope ? 'touched' : 'out'
-            const tag = f.isBlocked ? all.blocked : f.isInScope ? t.state.touched : all.outOfScope
+            const tag = (f.isBlocked ? all.blocked : f.isInScope ? t.state.touched : all.outOfScope) + (f.isShell ? all.shellNote : '')
             return `<div class="row"><code>${esc(f.path)}</code><span class="s ${cls}">${esc(tag)}</span></div>`
           })
           .join('')}</div></section>`
@@ -457,6 +515,7 @@ export function renderReport(input: {
 <h1 class="${tone}">${esc(t.headline[phase])}</h1>
 <p class="lede">${esc(lede)}</p>
 <ol class="steps">${steps}</ol>
+${risk}
 </header>
 <section><h2>${esc(t.statusTitle)}</h2><div class="group">${rows.join('')}</div>${callouts.join('')}${note}</section>
 ${touched}

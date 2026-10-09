@@ -64,6 +64,14 @@ export type TouchedFile = {
   modules: string[]
   isInScope: boolean
   isBlocked: boolean
+  /** Changed by a shell command rather than by an edit tool. */
+  isShell?: boolean
+}
+
+/** A snapshot of the whole worktree, kept as a git commit under refs/archgate/. */
+export type RestorePoint = {
+  commit: string
+  ref: string
 }
 
 export type CheckRun = {
@@ -86,6 +94,10 @@ export type Plan = {
   note?: string
   touched: TouchedFile[]
   checkRuns: CheckRun[]
+  /** Taken when the person approves; /archgate undo restores the plan's files from it. */
+  restorePoint?: RestorePoint
+  /** When /archgate undo put the plan's files back. */
+  undoneAt?: string
 }
 
 declare module 'claude-code' {

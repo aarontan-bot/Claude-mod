@@ -1,14 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
-import type { ArchMap, MapDelta, Plan, PlanStatus, TouchedFile } from '../types'
+import type { ArchMap, MapDelta, Plan, PlanStatus, RestorePoint, TouchedFile } from '../types'
 import { checkPlan, decideEdit, isActive, isCheck, isWithin, STATE_DIR, unverified } from './lib/gate'
 import type { Enforcement, Mode } from './lib/gate'
 import { strings, type Lang } from './lib/i18n'
 import { checkMap, coverage, diffMaps, isEmptyDelta, ownersOf } from './lib/map'
 import { relativeTo } from './lib/paths'
 import { contextSection } from './lib/prompt'
-import { moduleStates, phaseOf, renderReport, type ActivityEntry } from './lib/report'
+import { moduleStates, phaseOf, renderReport, riskText, type ActivityEntry } from './lib/report'
+import { assessRisk } from './lib/risk'
+import { changedPaths, parsePorcelain, type Hashes } from './lib/watch'
 
 type $ = EngineInterface
 
@@ -144,14 +146,111 @@ async function now($: $): Promise<string> {
   return new Date(await $.clock.now()).toISOString()
 }
 
-async function git($: $, args: string[]): Promise<string | null> {
+async function git($: $, args: string[], init: { env?: Record<string, string>; stdin?: string } = {}): Promise<string | null> {
   try {
-    const run = await $.process.run(['git', ...args], { cwd: await cwd($), timeoutMs: 15_000 })
+    const run = await $.process.run(['git', ...args], { cwd: await cwd($), timeoutMs: 30_000, ...init })
     return run.exitCode === 0 ? run.stdout : null
   } catch {
     return null
   }
 }
+
+/** Most files a shell-command snapshot hashes; past this it is skipped. */
+const MAX_WATCHED = 2000
+
+/**
+ * Content hashes of every file git sees as changed or new, plus `also`;
+ * null outside a git repository or when there are too many to hash.
+ */
+async function snapshot($: $, also: readonly string[] = []): Promise<Hashes | null> {
+  const status = await git($, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  if (status === null) return null
+  const paths = [...new Set([...parsePorcelain(status), ...also])]
+  if (paths.length > MAX_WATCHED) return null
+  const base = await cwd($)
+  const present: string[] = []
+  const hashes: Hashes = new Map()
+  for (const p of paths) {
+    if (await $.fs.exists(`${base}/${p}`).catch(() => false)) present.push(p)
+    else hashes.set(p, null)
+  }
+  if (present.length > 0) {
+    const out = await git($, ['hash-object', '--stdin-paths'], { stdin: present.join('\n') + '\n' })
+    if (out === null) return null
+    const lines = out.split('\n')
+    present.forEach((p, i) => hashes.set(p, lines[i] ?? null))
+  }
+  return hashes
+}
+
+const IDENT = {
+  GIT_AUTHOR_NAME: 'archgate',
+  GIT_AUTHOR_EMAIL: 'archgate@localhost',
+  GIT_COMMITTER_NAME: 'archgate',
+  GIT_COMMITTER_EMAIL: 'archgate@localhost',
+}
+
+/**
+ * Records the whole worktree, untracked files included, as a commit kept
+ * under refs/archgate/, through a private index: the person's own index,
+ * branches and stash are left as they were.
+ */
+async function createRestorePoint($: $, planId: number, at: string): Promise<RestorePoint | null> {
+  const indexPath = (await git($, ['rev-parse', '--git-path', 'archgate-index']))?.trim()
+  if (!indexPath) return null
+  const env = { ...IDENT, GIT_INDEX_FILE: indexPath.startsWith('/') ? indexPath : `${await cwd($)}/${indexPath}` }
+  const head = (await git($, ['rev-parse', '--verify', '--quiet', 'HEAD']))?.trim()
+  if ((await git($, head ? ['read-tree', head] : ['read-tree', '--empty'], { env })) === null) return null
+  if ((await git($, ['add', '-A'], { env })) === null) return null
+  const tree = (await git($, ['write-tree'], { env }))?.trim()
+  if (!tree) return null
+  const parent = head ? ['-p', head] : []
+  const commit = (await git($, ['commit-tree', tree, ...parent, '-m', `archgate: before plan #${planId}`], { env }))?.trim()
+  if (!commit) return null
+  const ref = `refs/archgate/plan-${planId}-${at.replace(/[^0-9]/g, '').slice(0, 14)}`
+  if ((await git($, ['update-ref', ref, commit])) === null) return null
+  return { commit, ref }
+}
+
+/** Puts every file the plan changed back as the restore point holds it. */
+async function undo($: $): Promise<string> {
+  const plan = await read($, planAtom)
+  if (plan === null || plan.undoneAt) return t.undo.none
+  const point = plan.restorePoint
+  if (!point) return t.undo.noPoint
+  const paths = [...new Set(plan.touched.filter(f => !f.isBlocked).map(f => f.path))]
+  if (paths.length === 0) return t.undo.nothing
+
+  const failed: string[] = []
+  for (const p of paths) {
+    const wasThere = (await git($, ['cat-file', '-e', `${point.commit}:${p}`])) !== null
+    const isTracked = (await git($, ['ls-files', '--error-unmatch', '--', p])) !== null
+    // restore puts a file back, or removes a tracked one the snapshot lacks
+    const ok =
+      wasThere || isTracked
+        ? (await git($, ['restore', `--source=${point.commit}`, '--worktree', '--', p])) !== null
+        : (await git($, ['clean', '-f', '-q', '--', p])) !== null
+    if (!ok) failed.push(p)
+  }
+  const at = await now($)
+  await update($, planAtom, p => (p === null ? p : { ...p, status: 'cancelled' as const, undoneAt: at, decidedAt: at }))
+  await log($, {
+    kind: 'undo',
+    evidence: 'observed',
+    plan: plan.id,
+    text: `plan #${plan.id} undone by the user: ${paths.length - failed.length} files restored${failed.length ? `, failed: ${failed.join(', ')}` : ''}`,
+  })
+  await refresh($)
+  const text = t.undo.done(plan.id, paths.length - failed.length)
+  return failed.length > 0 ? `${text}\n${t.undo.failed(failed.join('、'))}` : text
+}
+
+/** Where this project's plan is kept across sessions, in the mod's own store. */
+async function storeKey($: $): Promise<string> {
+  return `plan:${await cwd($)}`
+}
+
+type Saved = { plan: Plan | null; seq: number }
 
 async function readActivity($: $): Promise<ActivityEntry[]> {
   const text = await $.fs.read(`${await cwd($)}/${LOG_FILE}`).catch(() => '')
@@ -193,9 +292,20 @@ async function refresh($: $) {
     read($, pausedAtom),
   ])
   $.ui.status(statusLine(map, plan, isPaused))
+  const saved: Saved = { plan, seq: await read($, seqAtom) }
+  await $.store.set(await storeKey($), saved).catch(() => undefined)
   if (map === null) return
   const html = renderReport({ map, plan, stale, activity: await readActivity($), lang, now: await now($) })
   await $.fs.write(`${await cwd($)}/${REPORT_FILE}`, html).catch(() => undefined)
+}
+
+/** Brings back this project's plan and plan numbering from an earlier session. */
+async function restorePlan($: $) {
+  if ((await read($, planAtom)) !== null) return
+  const saved = (await $.store.get(await storeKey($)).catch(() => undefined)) as Saved | undefined
+  if (!saved || typeof saved.seq !== 'number') return
+  await update($, seqAtom, n => Math.max(n ?? 0, saved.seq))
+  if (saved.plan) await update($, planAtom, () => saved.plan)
 }
 
 async function loadMap($: $): Promise<ArchMap | null> {
@@ -234,8 +344,18 @@ async function approve($: $): Promise<string> {
   if (plan === null || (plan.status !== 'pending' && plan.status !== 'rejected')) {
     return lang === 'zh' ? '没有等待确认的计划。' : 'No plan is waiting for approval.'
   }
-  await update($, planAtom, setPlan('approved', await now($)))
-  await log($, { kind: 'approve', evidence: 'observed', plan: plan.id, text: `plan #${plan.id} approved by the user` })
+  const at = await now($)
+  const point = plan.restorePoint ?? (await createRestorePoint($, plan.id, at))
+  await update($, planAtom, p => {
+    const next = setPlan('approved', at)(p)
+    return next === null || point === null ? next : { ...next, restorePoint: point }
+  })
+  await log($, {
+    kind: 'approve',
+    evidence: 'observed',
+    plan: plan.id,
+    text: `plan #${plan.id} approved by the user${point ? `; restore point ${point.commit.slice(0, 10)}` : ''}`,
+  })
   await refresh($)
   $.ui.toast(t.toastApproved(plan.id))
   void $.prompt
@@ -311,12 +431,14 @@ async function describe($: $): Promise<string> {
   if (stale !== null) lines.push(`${r.caution}：${t.stale(stale.changedFiles, stale.modules.map(nameOf).join('、') || t.none)}`)
   if (plan === null) return [...lines, '', r.noPlanLede].join('\n')
 
+  const risk = assessRisk(map, plan, stale)
+  lines.push(`${t.risk.title}：${t.risk.level[risk.level]}。${risk.reasons.map(x => riskText(x, lang)).join('')}`)
   lines.push('', `${t.plan(plan.id)}：${plan.summary}`, '')
   lines.push(`${r.rowParts}：${plan.modules.map(nameOf).join('、')}`)
   lines.push(`${r.rowFiles}：${plan.files.length > 0 ? t.partsCount(plan.files.length) : r.filesUnknown}`)
   lines.push(`${r.rowImpact}：${plan.impact.map(nameOf).join('、') || t.none}`)
   for (const f of plan.touched) {
-    const tag = f.isBlocked ? t.blocked : f.isInScope ? r.state.touched : t.outOfScope
+    const tag = (f.isBlocked ? t.blocked : f.isInScope ? r.state.touched : t.outOfScope) + (f.isShell ? t.shellNote : '')
     lines.push(`${f.isInScope ? '✓' : '✗'} ${f.path}（${tag}）`)
   }
   for (const c of plan.checks) {
@@ -326,6 +448,7 @@ async function describe($: $): Promise<string> {
   const missing = unverified(plan)
   if (plan.status === 'completed' && missing.length > 0) lines.push(`${r.caution}：${r.cautionUnverified(missing.join('、'))}`)
   if (plan.status === 'pending' || plan.status === 'rejected') lines.push('', `${t.youDo}：`, t.howToApprove)
+  if (plan.status === 'approved' && plan.restorePoint) lines.push('', t.undo.hint)
   lines.push('', t.reportWritten(REPORT_FILE))
   return lines.join('\n')
 }
@@ -353,10 +476,12 @@ export const register: Register = (on, options) => {
     await $.tool.register(COMPLETE_TOOL)
     await $.command.register({
       name: 'archgate',
-      description: lang === 'zh' ? '架构闸门：打开面板 / 确认或驳回计划 / 生成报告' : 'Architecture gate: pane, approve or reject the plan, report',
-      argumentHint: '[approve | reject <reason> | status | report | on | off]',
+      description:
+        lang === 'zh' ? '架构闸门：查看计划 / 确认或驳回 / 撤销 / 生成报告' : 'Architecture gate: see, approve, reject or undo the plan; report',
+      argumentHint: '[approve | reject <reason> | undo | status | report | on | off]',
     })
 
+    await restorePlan($)
     const map = (await read($, mapAtom)) ?? (await loadMap($))
     await update($, mapAtom, () => map)
     if (map !== null) {
@@ -477,6 +602,7 @@ export const register: Register = (on, options) => {
       ...(isRefinement ? { decidedAt: at } : {}),
       touched: isRefinement ? previous.touched : [],
       checkRuns: isRefinement ? previous.checkRuns : [],
+      ...(isRefinement && previous.restorePoint ? { restorePoint: previous.restorePoint } : {}),
     }
     await update($, planAtom, () => plan)
     await log($, {
@@ -506,6 +632,8 @@ export const register: Register = (on, options) => {
     if (plan.impact.length > 0) {
       lines.push(`Callers that may be affected and are not in scope: ${plan.impact.join(', ')}. Mention them, and check them during verification.`)
     }
+    const risk = assessRisk(map, plan, await read($, staleAtom))
+    lines.push(`Risk light: ${risk.level}. ${risk.reasons.map(x => riskText(x, lang)).join(' ')} Tell the user the light and why.`)
     if (warnings.length > 0) lines.push('Warnings:', ...warnings.map(w => `- ${w}`))
     return { result: lines.join('\n') }
   }).catch(() => ({ deny: 'archgate: archgate_plan failed inside the mod; nothing was recorded.' }))
@@ -554,18 +682,51 @@ export const register: Register = (on, options) => {
   )
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    // files a command writes skip the edit tools, so compare the worktree around it
+    const [held, isPaused] = await Promise.all([read($, planAtom), read($, pausedAtom)])
+    const before = isActive(held) && enforcement !== 'off' && !isPaused ? await snapshot($) : null
     const ran = await next(e)
+    if (ran.deny !== undefined) return ran
     const plan = await read($, planAtom)
-    if (plan === null || plan.status !== 'approved' || ran.deny !== undefined || !isCheck(e.command, plan.checks)) {
-      return ran
+    const notes: string[] = []
+
+    if (before !== null && plan !== null) {
+      const after = await snapshot($, [...before.keys()])
+      const changed = after === null ? [] : changedPaths(before, after)
+      const map = await read($, mapAtom)
+      const outside: string[] = []
+      for (const path of changed) {
+        const decision = decideEdit({ map, plan, mode, enforcement, isPaused: false, path })
+        const isInScope = decision.verdict === 'allow'
+        await touch($, { path, modules: decision.owners, isInScope, isBlocked: false, isShell: true })
+        if (!isInScope) outside.push(path)
+      }
+      if (changed.length > 0) {
+        await log($, {
+          kind: 'shell-edit',
+          evidence: 'observed',
+          plan: plan.id,
+          text: `a command changed ${changed.join(', ')}${outside.length ? `; outside the plan: ${outside.join(', ')}` : ''}`,
+        })
+      }
+      if (outside.length > 0) {
+        $.ui.toast(t.toastShell(outside.join(', ')))
+        notes.push(
+          `archgate: this command changed files outside approved plan #${plan.id}: ${outside.join(', ')}. ` +
+            'Edits through shell commands are tracked like any other. Tell the user, and undo the change or submit a widened plan with archgate_plan.',
+        )
+      }
     }
-    const isOk = ran.isError !== true && ran.result?.interrupted !== true
-    const command = e.command.trim().slice(0, 300)
-    const at = await now($)
-    await update($, planAtom, p => (p === null ? p : { ...p, checkRuns: [...p.checkRuns, { command, isOk, at }].slice(-50) }))
-    await log($, { kind: 'check', evidence: 'observed', plan: plan.id, text: `${isOk ? 'passed' : 'failed'}: ${command}` })
-    await refresh($)
-    return ran
+
+    if (plan !== null && plan.status === 'approved' && isCheck(e.command, plan.checks)) {
+      const isOk = ran.isError !== true && ran.result?.interrupted !== true
+      const command = e.command.trim().slice(0, 300)
+      const at = await now($)
+      await update($, planAtom, p => (p === null ? p : { ...p, checkRuns: [...p.checkRuns, { command, isOk, at }].slice(-50) }))
+      await log($, { kind: 'check', evidence: 'observed', plan: plan.id, text: `${isOk ? 'passed' : 'failed'}: ${command}` })
+    }
+    if (before !== null || (plan !== null && isCheck(e.command, plan.checks))) await refresh($)
+    return notes.length > 0 ? { ...ran, context: [...(ran.context ?? []), ...notes] } : ran
   })
 
   on('command.run', { command: 'archgate' }, async ($, e) => {
@@ -573,12 +734,14 @@ export const register: Register = (on, options) => {
     const kind = e.origin?.kind ?? 'unknown'
     const isPerson = PERSON_ORIGINS.has(kind)
 
-    if (verb === 'approve' || verb === 'reject' || verb === 'on' || verb === 'off') {
+    if (['approve', 'reject', 'undo', 'on', 'off'].includes(verb)) {
       if (!isPerson) return { text: t.notPerson(kind) }
     }
     switch (verb) {
       case 'approve':
         return { text: await approve($) }
+      case 'undo':
+        return { text: await undo($) }
       case 'reject':
         return { text: await reject($, rest.join(' ')) }
       case 'off':
@@ -626,6 +789,8 @@ export const register: Register = (on, options) => {
     const shown = [...map.modules].sort((a, b) => order(states.get(a.id)) - order(states.get(b.id)))
     const room = Math.max(3, (e.viewport?.rows ?? 30) - 14)
     const missing = plan !== null ? unverified(plan) : []
+    const risk = plan !== null ? assessRisk(map, plan, stale) : null
+    const riskColor = { green: 'success', amber: 'warning', red: 'error' } as const
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -648,6 +813,11 @@ export const register: Register = (on, options) => {
               </Text>
             </Text>
             <Text wrap="wrap">{plan.summary}</Text>
+            {risk !== null && (
+              <Text color={riskColor[risk.level]} wrap="wrap">
+                ● {t.risk.level[risk.level]} <Text dimColor>{risk.reasons.map(x => riskText(x, lang)).join('')}</Text>
+              </Text>
+            )}
             {plan.files.length > 0 && <Text dimColor wrap="wrap">{plan.files.join('  ')}</Text>}
             {plan.status === 'completed' && missing.length > 0 && <Text color="error">{t.unverified(missing.join(', '))}</Text>}
           </Box>

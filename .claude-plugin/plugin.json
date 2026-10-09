@@ -1,6 +1,6 @@
 {
   "name": "archgate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Architecture map + plan gate: the AI maps modules, declares a scope, you approve it, and edits outside that scope are blocked and observed.",
   "author": { "name": "aarontan" },
   "license": "MIT",

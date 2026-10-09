@@ -38,6 +38,7 @@ export function contextSection(c: {
     '3. Edit only inside the approved scope. If more is needed, call archgate_plan again; a plan within the approved scope is approved at once.',
     '4. Run the planned checks with Bash (archgate records their real outcome), then call archgate_complete.',
     'Files under .archgate/ are archgate\'s own; do not edit them.',
+    'Files changed by shell commands are detected and held to the plan like any other edit. Only the user can undo a plan (/archgate undo); never run it or restore files from refs/archgate/ yourself.',
     'The user may not read code. Write to them in short, plain sentences: one fact or one action per sentence, no jargon. Show them .archgate/report.html as a rendered page when the plan or its state changes.',
   )
 

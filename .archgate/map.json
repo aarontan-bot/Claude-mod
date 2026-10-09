@@ -5,7 +5,7 @@
     {
       "id": "hooks",
       "name": "总控台",
-      "responsibility": "注册工具和命令；拦截 Edit/Write，观测 Bash；绘制面板和文字版面板；向系统提示注入上下文",
+      "responsibility": "注册工具和命令；拦截编辑；观测命令；存还原点和撤销；保存计划；绘制面板；向系统提示注入上下文",
       "plain": "Claude 每做一个动作都先经过这里。它决定放行还是拦下。",
       "group": "控制区",
       "paths": [
@@ -16,10 +16,18 @@
         {
           "path": "hooks/register.tsx",
           "lines": [
-            264,
-            296
+            198,
+            214
           ],
-          "note": "guard()"
+          "note": "createRestorePoint()"
+        },
+        {
+          "path": "hooks/register.tsx",
+          "lines": [
+            216,
+            250
+          ],
+          "note": "undo()"
         }
       ]
     },
@@ -40,6 +48,45 @@
             147
           ],
           "note": "decideEdit()"
+        }
+      ]
+    },
+    {
+      "id": "watch",
+      "name": "命令侦察",
+      "responsibility": "解析 git status，比较命令前后的文件哈希",
+      "plain": "每条命令前后对比文件，找出它改了哪些。",
+      "group": "规则区",
+      "paths": [
+        "hooks/lib/watch.ts"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/lib/watch.ts",
+          "lines": [
+            7,
+            28
+          ]
+        }
+      ]
+    },
+    {
+      "id": "risk",
+      "name": "风险评估",
+      "responsibility": "按计划外改动、失败检查、核心部件、连带影响等给出风险等级和原因",
+      "plain": "看改动的大小和位置，亮绿、黄或红灯。",
+      "group": "规则区",
+      "paths": [
+        "hooks/lib/risk.ts"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/lib/risk.ts",
+          "lines": [
+            30,
+            61
+          ],
+          "note": "assessRisk()"
         }
       ]
     },
@@ -86,7 +133,7 @@
     {
       "id": "report",
       "name": "报告打印机",
-      "responsibility": "渲染苹果风 HTML 检查单：状态、进度、自上而下的架构图、部件表",
+      "responsibility": "渲染苹果风 HTML 检查单：状态、风险灯、进度、架构图、部件表",
       "plain": "把一切画成你正在看的这份检查单。",
       "group": "输出区",
       "paths": [
@@ -100,14 +147,6 @@
             90
           ],
           "note": "bands()"
-        },
-        {
-          "path": "hooks/lib/report.ts",
-          "lines": [
-            296,
-            330
-          ],
-          "note": "renderReport()"
         }
       ]
     },
@@ -125,7 +164,7 @@
           "path": "hooks/lib/prompt.ts",
           "lines": [
             8,
-            66
+            67
           ]
         }
       ]
@@ -144,7 +183,7 @@
           "path": "hooks/lib/i18n.ts",
           "lines": [
             9,
-            140
+            60
           ]
         }
       ]
@@ -152,7 +191,7 @@
     {
       "id": "contract",
       "name": "记录格式",
-      "responsibility": "架构图、计划和会话状态的类型约定",
+      "responsibility": "架构图、计划、还原点和会话状态的类型约定",
       "plain": "规定计划和地图要记下哪些信息。",
       "group": "资料区",
       "paths": [
@@ -162,8 +201,8 @@
         {
           "path": "types/index.d.ts",
           "lines": [
-            7,
-            18
+            62,
+            105
           ]
         }
       ]
@@ -200,7 +239,7 @@
         {
           "path": "test/flow.test.ts",
           "lines": [
-            83,
+            82,
             160
           ]
         }
@@ -209,7 +248,7 @@
     {
       "id": "docs",
       "name": "说明书",
-      "responsibility": "README、许可证和忽略规则",
+      "responsibility": "README、许可证、忽略规则和这份架构图",
       "plain": "给人看的安装和使用说明。",
       "group": "资料区",
       "paths": [
@@ -235,6 +274,16 @@
       "from": "hooks",
       "to": "gate",
       "label": "判定写入"
+    },
+    {
+      "from": "hooks",
+      "to": "watch",
+      "label": "侦察命令"
+    },
+    {
+      "from": "hooks",
+      "to": "risk",
+      "label": "风险灯"
     },
     {
       "from": "hooks",
@@ -270,6 +319,14 @@
       "to": "paths"
     },
     {
+      "from": "watch",
+      "to": "gate"
+    },
+    {
+      "from": "risk",
+      "to": "archmap"
+    },
+    {
       "from": "archmap",
       "to": "paths",
       "label": "glob"
@@ -277,6 +334,10 @@
     {
       "from": "report",
       "to": "gate"
+    },
+    {
+      "from": "report",
+      "to": "risk"
     },
     {
       "from": "report",
@@ -296,8 +357,8 @@
       "to": "report"
     }
   ],
-  "revision": 3,
-  "updatedAt": "2026-10-09T14:47:42.866Z",
-  "commit": "a38e38090a0c4723c8e58c55568ce0af27a5d4c0",
+  "revision": 4,
+  "updatedAt": "2026-10-09T15:10:05.584Z",
+  "commit": "a23de249f2f37457492cb67957215a3c1f35889b",
   "isDirty": true
 }

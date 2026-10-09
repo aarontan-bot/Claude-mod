@@ -5,6 +5,8 @@ import { checkPlan, decideEdit, isCheck, isWithin, unverified } from '../hooks/l
 import { checkMap, coverage, diffMaps, ownersOf, reach } from '../hooks/lib/map'
 import { matchPath, normalize, relativeTo } from '../hooks/lib/paths'
 import { bands, layers, moduleStates, phaseOf, renderReport } from '../hooks/lib/report'
+import { assessRisk } from '../hooks/lib/risk'
+import { changedPaths, parsePorcelain } from '../hooks/lib/watch'
 
 const MAP: ArchMap = {
   version: 1,
@@ -237,5 +239,46 @@ describe('report', () => {
     expect(html).toContain('<h1 class="now">等你确认</h1>')
     expect(html).toContain('id="ag-copy"')
     expect(html).toContain('你确认之前，Claude 不能改代码。')
+  })
+
+  test('shows the risk light with its reasons', () => {
+    const html = renderReport({ map: MAP, plan: plan({ modules: ['db'], impact: ['api', 'auth'] }), stale: null, activity: [], lang: 'zh', now: '' })
+    expect(html).toContain('<div class="risk amber">')
+    expect(html).toContain('可能连带影响：API、Auth。')
+  })
+})
+
+describe('watch', () => {
+  test('reads git status, renames included, and leaves archgate out', () => {
+    const text = [' M src/a.ts', '?? new file.ts', 'R  src/to.ts', 'src/from.ts', ' M .archgate/report.html', ''].join('\0')
+    expect(parsePorcelain(text)).toEqual(['src/a.ts', 'new file.ts', 'src/to.ts'])
+  })
+
+  test('finds what a command changed', () => {
+    const before = new Map<string, string | null>([['a.ts', 'h1'], ['b.ts', 'h2'], ['gone.ts', 'h3']])
+    const after = new Map<string, string | null>([['a.ts', 'h1'], ['b.ts', 'h9'], ['gone.ts', null], ['new.ts', 'h4']])
+    expect(changedPaths(before, after)).toEqual(['b.ts', 'gone.ts', 'new.ts'])
+  })
+})
+
+describe('risk', () => {
+  test('green for a small, checked change', () => {
+    expect(assessRisk(MAP, plan({ modules: ['web'], impact: [] }), null).level).toBe('green')
+  })
+
+  test('amber for a core part, knock-on effects or no checks', () => {
+    const core: ArchMap = { ...MAP, relations: [...MAP.relations, { from: 'web', to: 'db' }] }
+    const risk = assessRisk(core, plan({ modules: ['db'], impact: [] }), null)
+    expect(risk.level).toBe('amber')
+    expect(risk.reasons).toContainEqual({ code: 'core', parts: ['DB'] })
+    expect(assessRisk(MAP, plan({ modules: ['web'], impact: [], checks: [] }), null).reasons).toContainEqual({ code: 'noChecks' })
+  })
+
+  test('red for changes outside the plan, failed checks, or half the project', () => {
+    const out = plan({ modules: ['web'], impact: [], touched: [{ path: 'src/db/a.ts', modules: ['db'], isInScope: false, isBlocked: false }] })
+    expect(assessRisk(MAP, out, null).level).toBe('red')
+    const failed = plan({ modules: ['web'], impact: [], checkRuns: [{ command: 'npm test', isOk: false, at: '' }] })
+    expect(assessRisk(MAP, failed, null).reasons[0]).toEqual({ code: 'failed', checks: ['npm test'] })
+    expect(assessRisk(MAP, plan({ modules: ['web', 'api'], impact: [] }), null).reasons[0]).toEqual({ code: 'wide', count: 2, total: 4 })
   })
 })
