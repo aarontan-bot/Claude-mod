@@ -1,0 +1,303 @@
+{
+  "version": 1,
+  "project": "Claude-mod (archgate)",
+  "modules": [
+    {
+      "id": "hooks",
+      "name": "Hooks 入口",
+      "responsibility": "注册工具和命令；拦截 Edit/Write，观测 Bash；绘制面板；向系统提示注入上下文",
+      "paths": [
+        "hooks/register.tsx",
+        "hooks/hooks.json"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/register.tsx",
+          "lines": [
+            252,
+            284
+          ],
+          "note": "guard()：写入前判定并记录"
+        },
+        {
+          "path": "hooks/register.tsx",
+          "lines": [
+            286,
+            330
+          ],
+          "note": "register()：session.start 注册工具与命令"
+        }
+      ]
+    },
+    {
+      "id": "gate",
+      "name": "闸门规则",
+      "responsibility": "校验计划，判定一次写入是放行、拦截还是提醒，识别检查命令",
+      "paths": [
+        "hooks/lib/gate.ts"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/lib/gate.ts",
+          "lines": [
+            94,
+            147
+          ],
+          "note": "decideEdit()"
+        },
+        {
+          "path": "hooks/lib/gate.ts",
+          "lines": [
+            31,
+            64
+          ],
+          "note": "checkPlan()"
+        }
+      ]
+    },
+    {
+      "id": "archmap",
+      "name": "架构图模型",
+      "responsibility": "校验架构图，计算文件归属、影响范围、版本差异和覆盖率",
+      "paths": [
+        "hooks/lib/map.ts"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/lib/map.ts",
+          "lines": [
+            19,
+            106
+          ],
+          "note": "checkMap()"
+        },
+        {
+          "path": "hooks/lib/map.ts",
+          "lines": [
+            118,
+            138
+          ],
+          "note": "reach()"
+        }
+      ]
+    },
+    {
+      "id": "paths",
+      "name": "路径工具",
+      "responsibility": "路径规范化、相对路径和 glob 匹配",
+      "paths": [
+        "hooks/lib/paths.ts"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/lib/paths.ts",
+          "lines": [
+            78,
+            87
+          ],
+          "note": "matchPath()"
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "name": "HTML 报告",
+      "responsibility": "把架构图、计划、改动和检查结果渲染成独立 HTML",
+      "paths": [
+        "hooks/lib/report.ts"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/lib/report.ts",
+          "lines": [
+            60,
+            130
+          ],
+          "note": "svg()：分层布局和连线"
+        },
+        {
+          "path": "hooks/lib/report.ts",
+          "lines": [
+            132,
+            224
+          ],
+          "note": "renderReport()"
+        }
+      ]
+    },
+    {
+      "id": "prompt",
+      "name": "系统提示",
+      "responsibility": "生成注入系统提示的工作流说明、模块列表和当前计划",
+      "paths": [
+        "hooks/lib/prompt.ts"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/lib/prompt.ts",
+          "lines": [
+            8,
+            65
+          ]
+        }
+      ]
+    },
+    {
+      "id": "i18n",
+      "name": "中英文文案",
+      "responsibility": "面板、状态栏和报告的中英文文本",
+      "paths": [
+        "hooks/lib/i18n.ts"
+      ],
+      "evidence": [
+        {
+          "path": "hooks/lib/i18n.ts",
+          "lines": [
+            5,
+            107
+          ]
+        }
+      ]
+    },
+    {
+      "id": "contract",
+      "name": "状态类型",
+      "responsibility": "架构图、计划和会话状态的类型约定",
+      "paths": [
+        "types"
+      ],
+      "evidence": [
+        {
+          "path": "types/index.d.ts",
+          "lines": [
+            1,
+            97
+          ]
+        }
+      ]
+    },
+    {
+      "id": "manifest",
+      "name": "插件清单",
+      "responsibility": "插件元数据、可配置项和 marketplace 条目",
+      "paths": [
+        ".claude-plugin"
+      ],
+      "evidence": [
+        {
+          "path": ".claude-plugin/plugin.json",
+          "lines": [
+            1,
+            30
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tests",
+      "name": "测试",
+      "responsibility": "纯逻辑测试和端到端流程测试",
+      "paths": [
+        "test"
+      ],
+      "evidence": [
+        {
+          "path": "test/flow.test.ts",
+          "lines": [
+            83,
+            155
+          ],
+          "note": "完整流程"
+        }
+      ]
+    },
+    {
+      "id": "docs",
+      "name": "文档",
+      "responsibility": "README、许可证和忽略规则",
+      "paths": [
+        "README.md",
+        "LICENSE",
+        ".gitignore"
+      ],
+      "evidence": [
+        {
+          "path": "README.md",
+          "lines": [
+            1,
+            142
+          ]
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "hooks",
+      "to": "gate",
+      "label": "判定写入"
+    },
+    {
+      "from": "hooks",
+      "to": "archmap",
+      "label": "校验地图"
+    },
+    {
+      "from": "hooks",
+      "to": "report",
+      "label": "写报告"
+    },
+    {
+      "from": "hooks",
+      "to": "prompt",
+      "label": "注入提示"
+    },
+    {
+      "from": "hooks",
+      "to": "i18n",
+      "label": "面板文案"
+    },
+    {
+      "from": "hooks",
+      "to": "contract"
+    },
+    {
+      "from": "gate",
+      "to": "archmap",
+      "label": "归属/影响"
+    },
+    {
+      "from": "gate",
+      "to": "paths"
+    },
+    {
+      "from": "archmap",
+      "to": "paths",
+      "label": "glob"
+    },
+    {
+      "from": "report",
+      "to": "gate"
+    },
+    {
+      "from": "report",
+      "to": "i18n"
+    },
+    {
+      "from": "prompt",
+      "to": "gate"
+    },
+    {
+      "from": "tests",
+      "to": "hooks",
+      "label": "端到端"
+    },
+    {
+      "from": "tests",
+      "to": "report"
+    }
+  ],
+  "revision": 1,
+  "updatedAt": "2026-10-09T13:53:02.911Z",
+  "commit": "33aeec5facb3d73c8b2fb43ac8379cc6a0c7812a"
+}
