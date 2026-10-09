@@ -8,7 +8,7 @@ import { strings, type Lang } from './lib/i18n'
 import { checkMap, coverage, diffMaps, isEmptyDelta, ownersOf } from './lib/map'
 import { relativeTo } from './lib/paths'
 import { contextSection } from './lib/prompt'
-import { moduleStates, renderReport, type ActivityEntry } from './lib/report'
+import { moduleStates, phaseOf, renderReport, type ActivityEntry } from './lib/report'
 
 type $ = EngineInterface
 
@@ -32,7 +32,8 @@ const MAP_TOOL = {
   description:
     'Record the architecture map of this project: its modules, the paths each owns, the evidence for it, and how modules depend on each other. ' +
     'Read the code first; every module should cite source evidence with line ranges. Replaces the whole map, so send every module each time. ' +
-    'Returns a receipt: validation, evidence checks, how many tracked files the modules cover, and what changed since the last revision.',
+    'Returns a receipt: validation, evidence checks, how many tracked files the modules cover, and what changed since the last revision. ' +
+    'The report is read by people who cannot read code: give each module an everyday name and a plain sentence, and put modules in a few named areas.',
   inputSchema: {
     type: 'object',
     required: ['project', 'modules', 'relations'],
@@ -42,11 +43,22 @@ const MAP_TOOL = {
         type: 'array',
         items: {
           type: 'object',
-          required: ['id', 'name', 'responsibility', 'paths'],
+          required: ['id', 'name', 'responsibility', 'plain', 'group', 'paths'],
           properties: {
             id: { type: 'string', description: 'Stable id: lowercase letters, digits, "-".' },
-            name: { type: 'string', description: "Short name, in the user's language." },
-            responsibility: { type: 'string', description: 'What it is responsible for, one or two sentences.' },
+            name: {
+              type: 'string',
+              description: "An everyday name in the user's language that a non-programmer understands, at most 8 characters, e.g. 门卫规则 (gate rules), 报告打印机 (report printer).",
+            },
+            responsibility: { type: 'string', description: 'What it is responsible for, in technical terms, one or two sentences.' },
+            plain: {
+              type: 'string',
+              description: "One short sentence in the user's language for someone who has never seen code. No jargon. Example: 判断一次修改在不在你批准的范围里。",
+            },
+            group: {
+              type: 'string',
+              description: "The area it belongs to, in the user's language, e.g. 控制区, 规则区, 输出区, 资料区. Use 3 to 6 areas for the whole map.",
+            },
             paths: {
               type: 'array',
               items: { type: 'string' },
@@ -169,7 +181,7 @@ function statusLine(map: ArchMap | null, plan: Plan | null, isPaused: boolean): 
     const out = plan.touched.filter(f => !f.isInScope).length
     return `archgate #${plan.id}: ${phase}${out > 0 ? ` · ${t.outOfScope} ${out}` : ''}`
   }
-  return map === null ? undefined : `archgate: r${map.revision} · ${map.modules.length} ${t.modules}`
+  return map === null ? undefined : `archgate · ${t.map(map.project, map.revision, map.modules.length)}`
 }
 
 /** Redraws what is derived from state: the status line and the report. */
@@ -291,31 +303,30 @@ async function describe($: $): Promise<string> {
     read($, staleAtom),
     read($, pausedAtom),
   ])
-  if (map === null) return `${t.title}\n${t.noMap}`
-  const lines = [t.title, t.map(map.project, map.revision, map.modules.length)]
+  if (map === null) return t.noMap
+  const r = t.r
+  const nameOf = (id: string) => map.modules.find(m => m.id === id)?.name ?? id
+  const lines = [`【${r.headline[phaseOf(map, plan)]}】`, t.map(map.project, map.revision, map.modules.length)]
   if (isPaused) lines.push(t.paused)
-  if (stale !== null) lines.push(t.stale(stale.changedFiles, stale.modules.join(', ') || '—'))
-  if (plan === null) return [...lines, '', t.noPlan].join('\n')
+  if (stale !== null) lines.push(`${r.caution}：${t.stale(stale.changedFiles, stale.modules.map(nameOf).join('、') || t.none)}`)
+  if (plan === null) return [...lines, '', r.noPlanLede].join('\n')
 
-  const phase = plan.status === 'approved' && plan.touched.length > 0 ? t.editing : t.status[plan.status]
-  lines.push('', `${t.plan(plan.id)} · ${phase}`, plan.summary, `${t.scope}: ${plan.modules.join(', ')}`)
-  if (plan.files.length > 0) lines.push(plan.files.join('  '))
-  if (plan.impact.length > 0) lines.push(`${t.impact}: ${plan.impact.join(', ')}`)
+  lines.push('', `${t.plan(plan.id)}：${plan.summary}`, '')
+  lines.push(`${r.rowParts}：${plan.modules.map(nameOf).join('、')}`)
+  lines.push(`${r.rowFiles}：${plan.files.length > 0 ? t.partsCount(plan.files.length) : r.filesUnknown}`)
+  lines.push(`${r.rowImpact}：${plan.impact.map(nameOf).join('、') || t.none}`)
   for (const f of plan.touched) {
-    const tag = f.isBlocked ? ` ${t.blocked}` : f.isInScope ? '' : ` ${t.outOfScope}`
-    lines.push(`${f.isInScope ? '●' : '✗'} ${f.path}${tag}`)
+    const tag = f.isBlocked ? t.blocked : f.isInScope ? r.state.touched : t.outOfScope
+    lines.push(`${f.isInScope ? '✓' : '✗'} ${f.path}（${tag}）`)
   }
-  if (plan.checks.length > 0) {
-    lines.push(`${t.checks}:`)
-    for (const c of plan.checks) {
-      const runs = plan.checkRuns.filter(r => r.command.includes(c))
-      const last = runs[runs.length - 1]
-      lines.push(`  ${last === undefined ? '○' : last.isOk ? '✓' : '✗'} ${c}`)
-    }
+  for (const c of plan.checks) {
+    const last = plan.checkRuns.filter(run => run.command.includes(c)).at(-1)
+    lines.push(`${last === undefined ? '○' : last.isOk ? '✓' : '✗'} ${r.rowChecks}：${c}`)
   }
   const missing = unverified(plan)
-  if (plan.status === 'completed' && missing.length > 0) lines.push(t.unverified(missing.join(', ')))
-  if (plan.status === 'pending' || plan.status === 'rejected') lines.push('', t.howToApprove)
+  if (plan.status === 'completed' && missing.length > 0) lines.push(`${r.caution}：${r.cautionUnverified(missing.join('、'))}`)
+  if (plan.status === 'pending' || plan.status === 'rejected') lines.push('', `${t.youDo}：`, t.howToApprove)
+  lines.push('', t.reportWritten(REPORT_FILE))
   return lines.join('\n')
 }
 
@@ -438,7 +449,9 @@ export const register: Register = (on, options) => {
       lines.push(`Changes since r${delta.from}: ${parts.join('; ')}.`)
     }
     if (warnings.length > 0) lines.push('Warnings:', ...warnings.slice(0, 30).map(w => `- ${w}`))
-    lines.push(`Report: ${REPORT_FILE}. Show the user the map and its uncertain parts before planning.`)
+    lines.push(
+      `Report: ${REPORT_FILE}, a standalone page. Show it to the user as a rendered page, not as source, with the uncertain parts of the map, before planning.`,
+    )
 
     await log($, { kind: 'map', evidence: 'declared', text: `map r${map.revision}: ${map.modules.length} modules` })
     await refresh($)
@@ -485,7 +498,9 @@ export const register: Register = (on, options) => {
         'End your turn now: summarise the plan for the user and ask them to approve it. Edits are refused until they do.',
       )
       if (!isShown) {
-        lines.push('The archgate pane is not shown in this client: tell the user to type /archgate approve (or /archgate reject <reason>), and /archgate to see the plan.')
+        lines.push(
+          `The archgate pane is not shown in this client. Show the user ${REPORT_FILE} as a rendered page, and tell them to type /archgate approve (or /archgate reject <reason>).`,
+        )
       }
     }
     if (plan.impact.length > 0) {

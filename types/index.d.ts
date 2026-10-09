@@ -6,8 +6,13 @@ export type Evidence = {
 
 export type ArchModule = {
   id: string
+  /** An everyday name a non-programmer understands ("门卫规则", "Gatekeeper"). */
   name: string
   responsibility: string
+  /** One plain sentence for someone who has never seen code. */
+  plain?: string
+  /** The area it belongs to, drawn as one row of the map ("规则区"). */
+  group?: string
   paths: string[]
   evidence?: Evidence[]
 }

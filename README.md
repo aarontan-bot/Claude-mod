@@ -8,18 +8,40 @@
 
 ## 安装
 
+需要 Claude Code 2.1.287 或更高版本（`claude --version` 查看）。
+
+### 装到自己的电脑
+
+在电脑的终端里运行：
+
+```sh
+git clone -b claude/new-mod-birdview-reference-ahm5xi https://github.com/aarontan-bot/Claude-mod.git ~/claude-mods/archgate
+claude plugin marketplace add ~/claude-mods/archgate
+claude plugin install archgate@claude-mod
+```
+
+装好后新开一个 Claude Code 会话即可使用。以后更新：
+
+```sh
+cd ~/claude-mods/archgate && git pull
+```
+
+然后在 Claude Code 里输入 `/reload-plugins`。
+
+### 合并到默认分支之后
+
 在 Claude Code 终端会话里输入：
 
 ```
 /plugin install archgate --marketplace aarontan-bot/Claude-mod
 ```
 
-提示 `Add marketplace?` 时输入 `y`，再按 Enter 选择 user 作用域。需要 Claude Code 2.1.287 或更高版本。
+提示 `Add marketplace?` 时输入 `y`，再按 Enter 选择 user 作用域。
 
-本地开发时也可以直接加载这个文件夹：
+### 只试用一次
 
 ```sh
-claude --plugin-dir /path/to/Claude-mod
+claude --plugin-dir ~/claude-mods/archgate
 ```
 
 ## 用法
@@ -32,7 +54,7 @@ claude --plugin-dir /path/to/Claude-mod
 
 Claude 会：
 
-1. 读源码，调用 `archgate_map` 记录模块、每个模块负责的文件路径、源码依据（带行号）和模块间的依赖关系。
+1. 读源码，调用 `archgate_map` 记录部件：生活化的名字（如「门卫规则」）、一句大白话说明、所属区域、负责的文件路径、源码依据（带行号），以及部件之间的依赖关系。
 2. 调用 `archgate_plan` 声明要改的模块、文件和验证命令，然后停下来等你。
 3. 你在 **archgate 面板** 里按 `确认实施`（或输入 `/archgate approve`），Claude 自动继续。
 4. 改代码时，范围外的文件会被拒绝写入；Claude 必须重新提交更大的计划并再次取得确认。
@@ -91,7 +113,7 @@ shop · 第 2 版 · 6 个模块
 | --- | --- | --- |
 | `map.json` | 架构图：模块、归属路径、依据、依赖关系、版本号和绘制时的 git 提交 | 提交到仓库，团队共享 |
 | `activity.jsonl` | 记录：每条注明是 Claude **声明**的（计划、收尾）还是 mod **观测**到的（改动、拦截、检查结果、你的确认） | 可加入 `.gitignore` |
-| `report.html` | 独立 HTML 报告：架构图（按计划状态着色）、计划、实际改动、检查结果、模块表、记录。支持深浅色。 | 可加入 `.gitignore` |
+| `report.html` | 独立 HTML 检查单，用浏览器打开即可，不联网也能看。按航空快速检查单和 ASD-STE100 简化写作规则编写，苹果风版式：大标题写现在到哪一步，分段进度条，状态列表和你要做的操作；完整架构图按区域从上往下排，点方框可看说明；部件表、名词表和记录。支持深浅色。 | 可加入 `.gitignore` |
 
 ## 借鉴了什么
 

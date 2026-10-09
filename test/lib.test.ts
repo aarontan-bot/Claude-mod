@@ -4,7 +4,7 @@ import type { ArchMap, Plan } from '../types'
 import { checkPlan, decideEdit, isCheck, isWithin, unverified } from '../hooks/lib/gate'
 import { checkMap, coverage, diffMaps, ownersOf, reach } from '../hooks/lib/map'
 import { matchPath, normalize, relativeTo } from '../hooks/lib/paths'
-import { layers, moduleStates, renderReport } from '../hooks/lib/report'
+import { bands, layers, moduleStates, phaseOf, renderReport } from '../hooks/lib/report'
 
 const MAP: ArchMap = {
   version: 1,
@@ -71,10 +71,20 @@ describe('map', () => {
     expect(errors.some(e => e.includes('"missing"'))).toBe(true)
   })
 
-  test('accepts a sound map and warns about missing evidence', () => {
+  test('accepts a sound map and warns about missing evidence and plain sentences', () => {
     const { errors, warnings } = checkMap({ project: 'shop', modules: MAP.modules, relations: MAP.relations })
     expect(errors).toEqual([])
-    expect(warnings.length).toBe(4)
+    expect(warnings.filter(w => w.includes('evidence')).length).toBe(4)
+    expect(warnings.filter(w => w.includes('plain sentence')).length).toBe(4)
+  })
+
+  test('keeps the plain sentence and the area', () => {
+    const { value } = checkMap({
+      modules: [{ id: 'a', name: '门卫', responsibility: 'x', plain: ' 判断改动在不在范围里。 ', group: '规则区', paths: ['src'] }],
+      relations: [],
+    })
+    expect(value.modules[0]?.plain).toBe('判断改动在不在范围里。')
+    expect(value.modules[0]?.group).toBe('规则区')
   })
 
   test('finds owners and callers', () => {
@@ -203,5 +213,29 @@ describe('report', () => {
     expect(html).toContain('&lt;shop&gt;')
     expect(html).not.toContain('<shop>')
     expect(html).toContain('<svg')
+  })
+
+  test('stacks areas top to bottom, callers first, unlinked areas last', () => {
+    const grouped: ArchMap = {
+      ...MAP,
+      modules: [
+        { id: 'docs', name: 'Docs', responsibility: 'x', group: 'Papers', paths: ['docs'] },
+        ...MAP.modules.map(m => ({ ...m, group: m.id === 'web' ? 'Front' : m.id === 'db' ? 'Storage' : 'Server' })),
+      ],
+    }
+    expect(bands(grouped).map(b => b.label)).toEqual(['Front', 'Server', 'Storage', 'Papers'])
+    expect(bands(MAP).map(b => b.ids)).toEqual([['web'], ['api'], ['auth'], ['db']])
+  })
+
+  test('the headline says where the work stands', () => {
+    expect(phaseOf(MAP, null)).toBe('none')
+    expect(phaseOf(MAP, plan({ status: 'pending' }))).toBe('pending')
+    expect(phaseOf(MAP, plan())).toBe('editing')
+    expect(phaseOf(MAP, plan({ checkRuns: [{ command: 'npm test', isOk: true, at: '' }] }))).toBe('checking')
+    expect(phaseOf(MAP, plan({ status: 'completed' }))).toBe('unverified')
+    const html = renderReport({ map: MAP, plan: plan({ status: 'pending' }), stale: null, activity: [], lang: 'zh', now: '2026-10-09T00:00:00.000Z' })
+    expect(html).toContain('<h1 class="now">等你确认</h1>')
+    expect(html).toContain('id="ag-copy"')
+    expect(html).toContain('你确认之前，Claude 不能改代码。')
   })
 })

@@ -33,11 +33,12 @@ export function contextSection(c: {
   lines.push(
     `Mode: ${c.mode}. ${gate}`,
     'Workflow:',
-    '1. Map: read the code, then call archgate_map with modules (id, name, responsibility, owned paths, evidence with line ranges) and relations (from depends on/calls to). Re-map when responsibilities or ownership change.',
+    '1. Map: read the code, then call archgate_map with modules (id, everyday name, responsibility, plain sentence, area, owned paths, evidence with line ranges) and relations (from depends on/calls to). Re-map when responsibilities or ownership change.',
     `2. Plan: ${c.mode === 'auto' ? 'before any code edit' : 'when archgate is in use for the task'}, call archgate_plan with the modules, files and verification commands. Then stop and wait: the user approves in the archgate pane or with /archgate approve. Never approve for them or treat silence as approval.`,
     '3. Edit only inside the approved scope. If more is needed, call archgate_plan again; a plan within the approved scope is approved at once.',
     '4. Run the planned checks with Bash (archgate records their real outcome), then call archgate_complete.',
     'Files under .archgate/ are archgate\'s own; do not edit them.',
+    'The user may not read code. Write to them in short, plain sentences: one fact or one action per sentence, no jargon. Show them .archgate/report.html as a rendered page when the plan or its state changes.',
   )
 
   if (c.map === null) {

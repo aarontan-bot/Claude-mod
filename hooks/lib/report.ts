@@ -1,6 +1,6 @@
 import type { ArchMap, Plan, Staleness } from '../../types'
 
-import { isActive, unverified } from './gate'
+import { unverified } from './gate'
 import { strings, type Lang } from './i18n'
 
 export type ActivityEntry = {
@@ -33,6 +33,8 @@ export function moduleStates(map: ArchMap, plan: Plan | null): Map<string, Modul
 const esc = (text: string) =>
   text.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
 
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+
 /** Columns by dependency depth: callers left, what they call to the right. */
 export function layers(map: ArchMap): Map<string, number> {
   const layer = new Map(map.modules.map(m => [m.id, 0]))
@@ -51,43 +53,96 @@ export function layers(map: ArchMap): Map<string, number> {
   return layer
 }
 
-const NODE_W = 200
-const NODE_H = 64
-const GAP_X = 96
-const GAP_Y = 28
-const PAD = 24
+export type Band = { label?: string; ids: string[] }
 
-function svg(map: ArchMap, states: Map<string, ModuleState>): string {
+/**
+ * The map's rows, top to bottom: one per group when modules name groups,
+ * else one per dependency layer. Callers sit above what they call; groups
+ * mostly without relations sink to the bottom.
+ */
+export function bands(map: ArchMap): Band[] {
   const layer = layers(map)
-  const columns = new Map<number, string[]>()
+  const linked = new Set(map.relations.flatMap(r => [r.from, r.to]))
+  const byLayer = (a: string, b: string) => (layer.get(a) ?? 0) - (layer.get(b) ?? 0)
+  if (!map.modules.some(m => m.group)) {
+    const rows: Band[] = []
+    for (const m of map.modules) {
+      const at = linked.has(m.id) ? (layer.get(m.id) ?? 0) : map.modules.length
+      while (rows.length <= at) rows.push({ ids: [] })
+      rows[at]!.ids.push(m.id)
+    }
+    return rows.filter(r => r.ids.length > 0)
+  }
+  const groups = new Map<string, string[]>()
   for (const m of map.modules) {
-    const col = layer.get(m.id) ?? 0
-    columns.set(col, [...(columns.get(col) ?? []), m.id])
+    const key = m.group?.trim() || '—'
+    groups.set(key, [...(groups.get(key) ?? []), m.id])
   }
-  const pos = new Map<string, { x: number; y: number }>()
-  let rows = 0
-  for (const [col, ids] of columns) {
-    ids.forEach((id, row) => pos.set(id, { x: PAD + col * (NODE_W + GAP_X), y: PAD + row * (NODE_H + GAP_Y) }))
-    rows = Math.max(rows, ids.length)
+  const depth = (ids: string[]) => {
+    const tied = ids.filter(id => linked.has(id))
+    return tied.length === 0 || tied.length * 2 < ids.length ? Infinity : Math.min(...tied.map(id => layer.get(id) ?? 0))
   }
-  const width = PAD * 2 + Math.max(1, columns.size) * NODE_W + Math.max(0, columns.size - 1) * GAP_X
-  const height = PAD * 2 + rows * NODE_H + Math.max(0, rows - 1) * GAP_Y
+  return [...groups.entries()]
+    .map(([label, ids], order) => ({ label, ids: [...ids].sort(byLayer), order, depth: depth(ids) }))
+    .sort((a, b) => a.depth - b.depth || a.order - b.order)
+    .map(({ label, ids }) => ({ label, ids }))
+}
 
+const NODE_W = 236
+const NODE_H = 76
+const GAP_X = 20
+const GAP_Y = 64
+const PAD = 20
+const HEAD = 34
+
+function diagram(map: ArchMap, states: Map<string, ModuleState>, numbers: Map<string, number>, lang: Lang): string {
+  const t = strings(lang).r
+  const rows = bands(map)
+  const hasLabels = rows.some(r => r.label !== undefined)
+  const head = hasLabels ? HEAD : 0
+  const perRow = Math.max(1, ...rows.map(r => r.ids.length))
+  const inner = perRow * NODE_W + (perRow - 1) * GAP_X
+  const width = PAD * 2 + inner + 24
+  const pos = new Map<string, { x: number; y: number; row: number }>()
+  rows.forEach((r, i) => {
+    const y = PAD + i * (head + NODE_H + GAP_Y) + head
+    r.ids.forEach((id, j) => pos.set(id, { x: PAD + 12 + j * (NODE_W + GAP_X), y, row: i }))
+  })
+  const height = PAD * 2 + rows.length * (head + NODE_H) + (rows.length - 1) * GAP_Y + 16
+
+  const zones = hasLabels
+    ? rows
+        .map((r, i) => {
+          const y = PAD + i * (head + NODE_H + GAP_Y) - 8
+          return `<g class="zone"><rect x="${PAD}" y="${y}" width="${inner + 24}" height="${head + NODE_H + 22}" rx="20"/><text x="${PAD + 16}" y="${y + 24}">${esc(r.label ?? '')}</text></g>`
+        })
+        .join('')
+    : ''
+
+  const sameRow = new Map<number, number>()
   const edges = map.relations
     .map(r => {
       const a = pos.get(r.from)
       const b = pos.get(r.to)
       if (!a || !b) return ''
-      const isForward = b.x > a.x
-      const [x1, y1] = isForward ? [a.x + NODE_W, a.y + NODE_H / 2] : [a.x + NODE_W / 2, a.y + NODE_H]
-      const [x2, y2] = isForward ? [b.x, b.y + NODE_H / 2] : [b.x + NODE_W / 2, b.y + NODE_H]
-      const d = isForward
-        ? `M${x1},${y1} C${x1 + GAP_X / 2},${y1} ${x2 - GAP_X / 2},${y2} ${x2},${y2}`
-        : `M${x1},${y1} C${x1},${y1 + 40} ${x2},${y2 + 40} ${x2},${y2}`
-      const label = r.label
-        ? `<text class="edge-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 6}">${esc(r.label)}</text>`
-        : ''
-      return `<path class="edge" d="${d}" marker-end="url(#arrow)"/>${label}`
+      let d: string
+      const ax = a.x + NODE_W / 2
+      const bx = b.x + NODE_W / 2
+      if (a.row === b.row) {
+        const k = (sameRow.get(a.row) ?? 0) + 1
+        sameRow.set(a.row, k)
+        const y = a.y + NODE_H
+        const dip = y + 14 + k * 8
+        d = `M${ax},${y} C${ax},${dip} ${bx},${dip} ${bx},${y}`
+      } else {
+        const isDown = b.row > a.row
+        const y1 = isDown ? a.y + NODE_H : a.y
+        const y2 = isDown ? b.y : b.y + NODE_H
+        const mid = (y1 + y2) / 2
+        d = `M${ax},${y1} C${ax},${mid} ${bx},${mid} ${bx},${y2}`
+      }
+      const title = r.label ? `<title>${esc(r.label)}</title>` : ''
+      return `<path class="edge" data-a="${esc(r.from)}" data-b="${esc(r.to)}" d="${d}" marker-end="url(#ag-arrow)">${title}</path>`
     })
     .join('')
 
@@ -95,38 +150,170 @@ function svg(map: ArchMap, states: Map<string, ModuleState>): string {
     .map(m => {
       const p = pos.get(m.id)!
       const state = states.get(m.id) ?? 'other'
-      const name = m.name.length > 24 ? `${m.name.slice(0, 23)}…` : m.name
+      const tag = state === 'other' ? '' : `<text class="tag" x="${NODE_W - 14}" y="27" text-anchor="end">${esc(t.state[state])}</text>`
       return (
-        `<g class="node ${state}" transform="translate(${p.x},${p.y})"><title>${esc(m.responsibility)}</title>` +
-        `<rect width="${NODE_W}" height="${NODE_H}" rx="10"/>` +
-        `<text class="name" x="14" y="27">${esc(name)}</text>` +
-        `<text class="id" x="14" y="47">${esc(m.id)}</text></g>`
+        `<g class="node ${state}" data-id="${esc(m.id)}" transform="translate(${p.x},${p.y})" tabindex="0" role="button" aria-label="${esc(m.name)}">` +
+        `<rect class="body" width="${NODE_W}" height="${NODE_H}" rx="16"/>` +
+        `<circle class="badge" cx="24" cy="23" r="11"/><text class="badge-n" x="24" y="27" text-anchor="middle">${numbers.get(m.id)}</text>` +
+        `<text class="nm" x="44" y="28">${esc(clip(m.name, state === 'other' ? 12 : 8))}</text>${tag}` +
+        `<text class="ds" x="16" y="56">${esc(clip(m.plain ?? m.responsibility, 16))}</text></g>`
       )
     })
     .join('')
 
   return (
-    `<svg viewBox="0 0 ${width} ${height}" width="${width}" role="img" aria-label="architecture map">` +
-    '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
-    '<path d="M0,0 L10,5 L0,10 z" class="arrow"/></marker></defs>' +
-    `${edges}${nodes}</svg>`
+    `<svg viewBox="0 0 ${width} ${height}" style="min-width:${Math.min(width, 640)}px" role="img" aria-label="${esc(t.diagramTitle)}">` +
+    '<defs><marker id="ag-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
+    '<path d="M0,0 L10,5 L0,10 z"/></marker></defs>' +
+    `${zones}${edges}${nodes}</svg>`
   )
 }
 
+type Phase = 'noMap' | 'none' | 'pending' | 'rejected' | 'editing' | 'checking' | 'completed' | 'unverified' | 'failed' | 'cancelled'
+
+export function phaseOf(map: ArchMap | null, plan: Plan | null): Phase {
+  if (map === null) return 'noMap'
+  if (plan === null) return 'none'
+  switch (plan.status) {
+    case 'pending':
+    case 'rejected':
+    case 'failed':
+    case 'cancelled':
+      return plan.status
+    case 'approved':
+      return plan.checkRuns.length > 0 ? 'checking' : 'editing'
+    case 'completed':
+      return unverified(plan).length > 0 ? 'unverified' : 'completed'
+  }
+}
+
+/** Which of the six steps is done, current, or still ahead. */
+function stepStates(phase: Phase): ('done' | 'now' | 'bad' | 'todo')[] {
+  const at: Record<Phase, number> = {
+    noMap: 0, none: 1, pending: 2, rejected: 2, editing: 3, checking: 4, completed: 6, unverified: 5, failed: 5, cancelled: 2,
+  }
+  const current = at[phase]
+  const isBad = phase === 'rejected' || phase === 'failed' || phase === 'unverified' || phase === 'cancelled'
+  return [0, 1, 2, 3, 4, 5].map(i => (i < current ? 'done' : i === current ? (isBad ? 'bad' : 'now') : 'todo'))
+}
+
 const CSS = `
-:root{--bg:#f7f7f5;--card:#fff;--fg:#1d1d1b;--muted:#6b6b66;--line:#d9d9d4;--planned:#2563eb;--touched:#16a34a;--out:#dc2626;--impact:#d97706;--other:#9a9a94}
-@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1f1f1d;--fg:#ecece8;--muted:#a3a39d;--line:#3a3a37;--planned:#60a5fa;--touched:#4ade80;--out:#f87171;--impact:#fbbf24;--other:#77776f}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-main{max-width:1200px;margin:0 auto;padding:24px 16px 64px}h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 10px}
-.muted{color:var(--muted)}.warn{border-left:3px solid var(--impact);padding:8px 12px;background:var(--card);margin:12px 0}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:12px 0}
-.canvas{overflow-x:auto}.legend{display:flex;gap:16px;flex-wrap:wrap;margin:8px 0}.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;background:var(--c)}
-svg text{fill:var(--fg)}.node rect{fill:var(--card);stroke:var(--other);stroke-width:1.5}.node .name{font-weight:600;font-size:14px}.node .id{fill:var(--muted);font-size:12px;font-family:ui-monospace,monospace}
-.node.planned rect{stroke:var(--planned);stroke-width:2.5}.node.touched rect{stroke:var(--touched);stroke-width:2.5}.node.out rect{stroke:var(--out);stroke-width:3;stroke-dasharray:6 3}.node.impact rect{stroke:var(--impact);stroke-width:2;stroke-dasharray:3 3}
-.edge{fill:none;stroke:var(--muted);stroke-width:1.3}.arrow{fill:var(--muted)}.edge-label{fill:var(--muted);font-size:11px;text-anchor:middle}
-table{width:100%;border-collapse:collapse}td,th{text-align:left;vertical-align:top;padding:8px;border-top:1px solid var(--line)}code{font-family:ui-monospace,monospace;font-size:12px}
-.ok{color:var(--touched)}.bad{color:var(--out)}.chip{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid var(--line);margin:0 4px 4px 0;font-size:12px}
-ul{margin:4px 0;padding-left:20px}
+:root{--bg:#f5f5f7;--card:#fff;--fg:#1d1d1f;--sub:#6e6e73;--line:#d2d2d7;--fill:#f0f0f3;
+--blue:#0071e3;--blue-t:#0066cc;--green:#34c759;--green-t:#248a3d;--orange:#ff9500;--orange-t:#b25000;--red:#ff3b30;--red-t:#d70015;
+--orange-bg:#fff4e5;--blue-bg:#e8f2fd;--shadow:0 1px 2px rgba(0,0,0,.04),0 6px 24px rgba(0,0,0,.06)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#000;--card:#1c1c1e;--fg:#f5f5f7;--sub:#98989d;--line:#38383a;--fill:#2c2c2e;
+--blue:#0a84ff;--blue-t:#409cff;--green:#30d158;--green-t:#30d158;--orange:#ff9f0a;--orange-t:#ffb340;--red:#ff453a;--red-t:#ff6961;
+--orange-bg:#2b1d05;--blue-bg:#0b2340;--shadow:none;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#000;--card:#1c1c1e;--fg:#f5f5f7;--sub:#98989d;--line:#38383a;--fill:#2c2c2e;
+--blue:#0a84ff;--blue-t:#409cff;--green:#30d158;--green-t:#30d158;--orange:#ff9f0a;--orange-t:#ffb340;--red:#ff453a;--red-t:#ff6961;
+--orange-bg:#2b1d05;--blue-bg:#0b2340;--shadow:none;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:980px;margin:0 auto;padding:56px 20px 96px;display:grid;gap:48px}
+code,.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.86em}
+.hero{display:grid;gap:10px}
+.eyebrow{color:var(--sub);font-weight:600;font-size:17px}
+h1{margin:0;font:700 clamp(40px,7vw,64px)/1.06 -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif;letter-spacing:-.025em}
+h1.now{color:var(--fg)}h1.bad{color:var(--red-t)}h1.ok{color:var(--green-t)}
+.lede{margin:0;color:var(--sub);font-size:21px;line-height:1.4;max-width:42em}
+.steps{list-style:none;margin:8px 0 0;padding:4px;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;background:var(--fill);border-radius:999px}
+.steps li{text-align:center;padding:9px 4px;border-radius:999px;font-size:14px;font-weight:600;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.steps li.done{color:var(--green-t)}.steps li.done::before{content:"✓ "}
+.steps li.now{background:var(--card);color:var(--fg);box-shadow:var(--shadow)}
+.steps li.bad{background:var(--card);color:var(--red-t);box-shadow:var(--shadow)}
+section{display:grid;gap:14px;min-width:0}
+h2{margin:0 0 2px 4px;font-size:28px;font-weight:700;letter-spacing:-.015em}
+.group{background:var(--card);border-radius:18px;box-shadow:var(--shadow);overflow:hidden}
+.row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 20px;position:relative;min-height:52px}
+.row+.row::before{content:"";position:absolute;top:0;left:20px;right:0;border-top:.5px solid var(--line)}
+.row .k{color:var(--fg)}.row .v{color:var(--sub);text-align:right;font-weight:500}
+.v.now{color:var(--orange-t)}.v.ok{color:var(--green-t)}.v.bad{color:var(--red-t)}
+.row.act{background:var(--blue-bg)}.row.act .k{font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:10px;background:var(--blue);color:#fff;border-radius:999px;padding:7px 8px 7px 16px;font:600 15px "SF Mono",ui-monospace,Menlo,monospace}
+.pill button{all:unset;cursor:pointer;background:rgba(255,255,255,.22);border-radius:999px;padding:3px 10px;font:600 13px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+.pill button:focus-visible{outline:2px solid #fff}
+.callout{display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:start;border-radius:18px;padding:16px 20px;background:var(--card);box-shadow:var(--shadow)}
+.callout .ic{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:800;font-size:16px}
+.callout.warn{background:var(--orange-bg)}.callout.warn .ic{background:var(--orange)}
+.callout.info .ic{background:var(--sub)}
+.callout b{display:block;font-size:15px;margin-bottom:2px}
+.callout ol{margin:4px 0 0;padding-left:20px;color:var(--fg)}
+.callout p{margin:0}
+.legend{display:flex;flex-wrap:wrap;gap:8px 20px;padding:0 4px;font-size:14px;color:var(--sub)}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.legend i{width:22px;height:14px;border-radius:5px;border:2px solid var(--c);display:inline-block}
+.legend i.dash{border-style:dashed}
+.map{padding:8px}
+.canvas{overflow-x:auto;border-radius:12px}
+.canvas svg{display:block;width:100%;height:auto}
+svg text{fill:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+.zone rect{fill:var(--fill);stroke:none}.zone text{fill:var(--sub);font-size:13px;font-weight:600}
+.edge{fill:none;stroke:var(--line);stroke-width:1.6;transition:stroke .15s,opacity .15s}
+marker path{fill:var(--sub)}
+.node{cursor:pointer;transition:opacity .15s}.node:focus{outline:none}
+.node .body{fill:var(--card);stroke:var(--line);stroke-width:1}
+.node .badge{fill:var(--fill)}.node .badge-n{fill:var(--sub);font:600 12px "SF Mono",ui-monospace,Menlo,monospace}
+.node .nm{font-weight:600;font-size:15px}.node .ds{fill:var(--sub);font-size:12.5px}
+.node .tag{font-size:12px;font-weight:600}
+.node.planned .body{stroke:var(--blue);stroke-width:2.5}.node.planned .badge{fill:var(--blue)}.node.planned .badge-n{fill:#fff}.node.planned .tag{fill:var(--blue-t)}
+.node.touched .body{stroke:var(--green);stroke-width:2.5}.node.touched .badge{fill:var(--green)}.node.touched .badge-n{fill:#fff}.node.touched .tag{fill:var(--green-t)}
+.node.out .body{stroke:var(--red);stroke-width:2.5;stroke-dasharray:7 4}.node.out .badge{fill:var(--red)}.node.out .badge-n{fill:#fff}.node.out .tag{fill:var(--red-t)}
+.node.impact .body{stroke:var(--orange);stroke-width:2;stroke-dasharray:4 4}.node.impact .tag{fill:var(--orange-t)}
+.node.sel .body,.node:focus-visible .body{stroke:var(--blue);stroke-width:3.5;stroke-dasharray:none}
+.edge.hot{stroke:var(--blue);stroke-width:2.6}.dim{opacity:.25}
+.detail{padding:18px 20px 20px;border-top:.5px solid var(--line);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px 24px;font-size:15px}
+.detail .lead{grid-column:1/-1}.detail .hint{grid-column:1/-1;color:var(--sub);margin:0}
+.detail h3{margin:2px 0 4px;font-size:22px;letter-spacing:-.01em}
+.detail .l{font-size:12px;font-weight:600;color:var(--sub);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+.detail p{margin:0}.detail code{word-break:break-all}
+.parts .row{align-items:flex-start;justify-content:flex-start}
+.parts .n{flex:none;width:26px;height:26px;border-radius:50%;background:var(--fill);color:var(--sub);display:grid;place-items:center;font:600 12px "SF Mono",ui-monospace,Menlo,monospace;margin-top:1px}
+.parts .n.planned{background:var(--blue);color:#fff}.parts .n.touched{background:var(--green);color:#fff}.parts .n.out{background:var(--red);color:#fff}
+.parts .body{flex:1;min-width:0}.parts .body b{font-weight:600}.parts .body p{margin:2px 0 0;color:var(--sub);font-size:15px}
+.parts .s{flex:none;font-size:14px;font-weight:600;color:var(--sub)}
+.s.planned{color:var(--blue-t)}.s.touched{color:var(--green-t)}.s.out{color:var(--red-t)}.s.impact{color:var(--orange-t)}
+.files .row{justify-content:flex-start;gap:12px}.files .row code{flex:1;min-width:0;word-break:break-all}
+.terms{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.term{background:var(--card);border-radius:16px;padding:14px 16px;box-shadow:var(--shadow);font-size:15px;color:var(--sub)}
+.term b{display:block;color:var(--fg);font-size:16px;margin-bottom:2px}
+details{background:var(--card);border-radius:18px;box-shadow:var(--shadow);padding:4px 0}
+summary{cursor:pointer;padding:12px 20px;font-weight:600}
+details ul{list-style:none;margin:0;padding:0 20px 12px;display:grid;gap:8px;font-size:14px}
+details li span{color:var(--sub)}
+footer{color:var(--sub);font-size:13px;text-align:center}
+@media (max-width:720px){main{padding-top:36px;gap:36px}.steps{grid-template-columns:repeat(3,minmax(0,1fr));border-radius:18px}.terms{grid-template-columns:minmax(0,1fr)}.detail{grid-template-columns:minmax(0,1fr)}.row{flex-wrap:wrap}.row .v{text-align:left}}
+@media (prefers-reduced-motion:reduce){.edge,.node{transition:none}}
+`
+
+const SCRIPT = `
+(function(){
+  var data = JSON.parse(document.getElementById('ag-data').textContent);
+  var svg = document.querySelector('.canvas svg'), detail = document.getElementById('ag-detail');
+  if (!svg) return;
+  var nodes = svg.querySelectorAll('.node'), edges = svg.querySelectorAll('.edge');
+  function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function select(id){
+    var p = data.parts[id]; if (!p) return;
+    var near = {}; near[id] = 1;
+    edges.forEach(function(e){ var hot = e.dataset.a === id || e.dataset.b === id; if (hot){ near[e.dataset.a] = 1; near[e.dataset.b] = 1; } e.classList.toggle('hot', hot); e.classList.toggle('dim', !hot); });
+    nodes.forEach(function(n){ n.classList.toggle('sel', n.dataset.id === id); n.classList.toggle('dim', !near[n.dataset.id]); });
+    var t = data.t;
+    detail.innerHTML = '<div class="lead"><div class="l">' + esc(p.label) + '</div><h3>' + esc(p.name) + '</h3><p>' + esc(p.plain) + '</p></div>' +
+      '<div><div class="l">' + esc(t.thisTime) + '</div><p>' + esc(p.state) + '</p></div>' +
+      '<div><div class="l">' + esc(t.uses) + '</div><p>' + esc(p.uses.join('、') || t.none) + '</p></div>' +
+      '<div><div class="l">' + esc(t.users) + '</div><p>' + esc(p.users.join('、') || t.none) + '</p></div>' +
+      '<div><div class="l">' + esc(t.files) + '</div><p><code>' + esc(p.files) + '</code></p></div>';
+  }
+  nodes.forEach(function(n){
+    n.addEventListener('click', function(){ select(n.dataset.id); });
+    n.addEventListener('keydown', function(ev){ if (ev.key === 'Enter' || ev.key === ' '){ ev.preventDefault(); select(n.dataset.id); } });
+  });
+  var copy = document.getElementById('ag-copy');
+  if (copy) copy.addEventListener('click', function(){
+    var done = function(){ copy.textContent = data.t.copied; };
+    try { navigator.clipboard.writeText(copy.dataset.text).then(done, function(){}); } catch (e) {}
+  });
+})();
 `
 
 export function renderReport(input: {
@@ -137,88 +324,154 @@ export function renderReport(input: {
   lang: Lang
   now: string
 }): string {
-  const t = strings(input.lang)
-  const { map, plan } = input
+  const all = strings(input.lang)
+  const t = all.r
+  const { map, plan, stale } = input
   const states = moduleStates(map, plan)
-  const chips = (ids: readonly string[]) => ids.map(id => `<span class="chip">${esc(id)}</span>`).join('') || '—'
+  const numbers = new Map(map.modules.map((m, i) => [m.id, i + 1]))
+  const nameOf = (id: string) => map.modules.find(m => m.id === id)?.name ?? id
+  const phase = phaseOf(map, plan)
+  const tone = phase === 'completed' ? 'ok' : ['rejected', 'failed', 'unverified', 'cancelled'].includes(phase) ? 'bad' : 'now'
+
+  const steps = stepStates(phase)
+    .map((s, i) => `<li class="${s}"${s === 'now' || s === 'bad' ? ' aria-current="step"' : ''}>${esc(t.steps[i] ?? '')}</li>`)
+    .join('')
+
+  // the checklist
+  const rows: string[] = []
+  const row = (k: string, v: string, cls = '') => rows.push(`<div class="row"><span class="k">${esc(k)}</span><span class="v ${cls}">${v}</span></div>`)
+  let action = ''
+  const callouts: string[] = []
+  const warn = (text: string) => callouts.push(`<div class="callout warn"><span class="ic">!</span><div><b>${esc(t.caution)}</b><p>${esc(text)}</p></div></div>`)
+  if (stale !== null) warn(all.stale(stale.changedFiles, stale.modules.map(nameOf).join('、') || all.none))
+
+  if (plan !== null) {
+    const missing = unverified(plan)
+    const out = plan.touched.filter(f => !f.isInScope)
+    const blocked = out.filter(f => f.isBlocked).length
+    const ran = plan.checks.map(c => plan.checkRuns.filter(r => r.command.includes(c)).at(-1))
+    row(t.rowPlan, esc(`#${plan.id} · ${all.status[plan.status]}`), tone)
+    row(t.rowParts, esc(`${all.partsCount(plan.modules.length)}：${plan.modules.map(nameOf).join('、')}`))
+    row(t.rowFiles, esc(plan.files.length > 0 ? all.partsCount(plan.files.length) : t.filesUnknown))
+    row(t.rowImpact, esc(plan.impact.length > 0 ? plan.impact.map(nameOf).join('、') : all.none), plan.impact.length > 0 ? 'now' : 'ok')
+    if (plan.touched.length > 0) row(t.rowTouched, esc(t.touchedVal(plan.touched.filter(f => !f.isBlocked).length, out.length)), out.length > 0 ? 'bad' : 'ok')
+    row(
+      t.rowChecks,
+      esc(t.checksVal(ran.filter(r => r?.isOk).length, ran.filter(r => r && !r.isOk).length, ran.filter(r => !r).length)),
+      ran.some(r => r && !r.isOk) ? 'bad' : ran.length > 0 && ran.every(r => r?.isOk) ? 'ok' : '',
+    )
+
+    if (plan.status === 'pending') {
+      action = `<span class="pill">${esc(t.actApprove)}<button id="ag-copy" type="button" data-text="${esc(t.actApprove)}">${esc(t.copy)}</button></span>`
+      warn(t.cautionPending)
+    } else if (plan.status === 'rejected') {
+      action = esc(t.actWait)
+      warn(t.cautionRejected(plan.rejectReason ?? ''))
+    } else {
+      action = esc(t.actNone)
+    }
+    if (blocked > 0) warn(t.cautionBlocked(blocked))
+    if (out.length - blocked > 0) warn(t.cautionWarned(out.length - blocked))
+    if (plan.status === 'completed' && missing.length > 0) warn(t.cautionUnverified(missing.join('、')))
+  } else {
+    action = esc(t.actNone)
+  }
+  if (stale !== null && (plan === null || plan.status !== 'pending')) action = esc(t.actRemap)
+  rows.push(`<div class="row act"><span class="k">${esc(all.youDo)}</span><span class="v">${action}</span></div>`)
+
+  const note =
+    plan?.status === 'pending'
+      ? `<div class="callout info"><span class="ic">i</span><div><b>${esc(t.noteTitle)}</b><ol>${t.noteSteps.map(s => `<li>${esc(s)}</li>`).join('')}</ol></div></div>`
+      : ''
+
+  const touched =
+    plan !== null && plan.touched.length > 0
+      ? `<section><h2>${esc(t.touchedTitle)}</h2><div class="group files">${plan.touched
+          .map(f => {
+            const cls = f.isInScope ? 'touched' : 'out'
+            const tag = f.isBlocked ? all.blocked : f.isInScope ? t.state.touched : all.outOfScope
+            return `<div class="row"><code>${esc(f.path)}</code><span class="s ${cls}">${esc(tag)}</span></div>`
+          })
+          .join('')}</div></section>`
+      : ''
+
+  // the diagram's data, for the selection panel
+  const parts: Record<string, unknown> = {}
+  for (const m of map.modules) {
+    const state = states.get(m.id) ?? 'other'
+    parts[m.id] = {
+      label: t.part(numbers.get(m.id) ?? 0),
+      name: m.name,
+      plain: m.plain ?? m.responsibility,
+      state: t.state[state],
+      uses: map.relations.filter(r => r.from === m.id).map(r => nameOf(r.to)),
+      users: map.relations.filter(r => r.to === m.id).map(r => nameOf(r.from)),
+      files: m.paths.join(' · '),
+    }
+  }
+  const data = JSON.stringify({ parts, t: { thisTime: t.thisTime, uses: t.uses, users: t.users, files: t.files, none: all.none, copied: t.copied } }).replace(
+    /</g,
+    '\\u003c',
+  )
 
   const legend = (
     [
-      ['planned', t.legendPlanned],
-      ['touched', t.legendTouched],
-      ['out', t.legendOut],
-      ['impact', t.legendImpact],
-      ['other', t.legendOther],
+      ['planned', 'var(--blue)', ''],
+      ['touched', 'var(--green)', ''],
+      ['out', 'var(--red)', 'dash'],
+      ['impact', 'var(--orange)', 'dash'],
+      ['other', 'var(--line)', ''],
     ] as const
   )
-    .map(([k, label]) => `<span style="--c:var(--${k})">${esc(label)}</span>`)
+    .map(([k, c, dash]) => `<span><i class="${dash}" style="--c:${c}"></i>${esc(t.legend[k])}</span>`)
     .join('')
 
-  let planHtml = `<p class="muted">${esc(t.noPlan)}</p>`
-  if (plan !== null) {
-    const status = isActive(plan) && plan.status === 'approved' && plan.touched.length > 0 ? t.editing : t.status[plan.status]
-    const missing = unverified(plan)
-    const touched = plan.touched
-      .map(f => {
-        const cls = f.isInScope ? 'ok' : 'bad'
-        const tag = f.isBlocked ? t.blocked : f.isInScope ? '' : t.outOfScope
-        return `<li><code>${esc(f.path)}</code> <span class="${cls}">${esc(f.modules.join(', ') || '—')} ${esc(tag)}</span></li>`
-      })
-      .join('')
-    const checks = plan.checks
-      .map(c => {
-        const runs = plan.checkRuns.filter(r => r.command.includes(c))
-        const last = runs[runs.length - 1]
-        const mark = last === undefined ? `<span class="muted">${esc(t.notRun)}</span>` : last.isOk ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'
-        return `<li>${mark} <code>${esc(c)}</code></li>`
-      })
-      .join('')
-    planHtml =
-      `<p><strong>${esc(t.plan(plan.id))}</strong> · ${esc(status)}</p><p>${esc(plan.summary)}</p>` +
-      `<p>${esc(t.scope)}: ${chips(plan.modules)}</p>` +
-      (plan.files.length > 0 ? `<ul>${plan.files.map(f => `<li><code>${esc(f)}</code></li>`).join('')}</ul>` : '') +
-      `<p>${esc(t.impact)}: ${chips(plan.impact)}</p>` +
-      (touched ? `<h2>${esc(t.touched)}</h2><ul>${touched}</ul>` : '') +
-      (checks ? `<h2>${esc(t.checks)}</h2><ul>${checks}</ul>` : '') +
-      (plan.status === 'completed' && missing.length > 0 ? `<p class="bad">${esc(t.unverified(missing.join(', ')))}</p>` : '')
-  }
-
-  const rows = map.modules
+  const partsList = map.modules
     .map(m => {
-      const evidence = (m.evidence ?? [])
-        .map(e => `<li><code>${esc(e.path)}${e.lines ? `:${e.lines[0]}-${e.lines[1]}` : ''}</code>${e.note ? ` ${esc(e.note)}` : ''}</li>`)
-        .join('')
+      const state = states.get(m.id) ?? 'other'
       return (
-        `<tr><td><strong>${esc(m.name)}</strong><br><code class="muted">${esc(m.id)}</code></td>` +
-        `<td>${esc(m.responsibility)}</td><td>${m.paths.map(p => `<code>${esc(p)}</code>`).join('<br>')}</td>` +
-        `<td>${evidence ? `<ul>${evidence}</ul>` : '—'}</td></tr>`
+        `<div class="row"><span class="n ${state}">${numbers.get(m.id)}</span>` +
+        `<div class="body"><b>${esc(m.name)}</b><p>${esc(m.plain ?? m.responsibility)}</p></div>` +
+        `<span class="s ${state}">${esc(t.state[state])}</span></div>`
       )
     })
     .join('')
 
-  const activity = input.activity
-    .slice(-60)
-    .reverse()
-    .map(a => `<li><span class="muted">${esc(a.at.slice(0, 19).replace('T', ' '))} · ${esc(a.evidence === 'observed' ? t.observed : t.declared)}</span> ${esc(a.text)}</li>`)
-    .join('')
+  const activity = input.activity.slice(-80).reverse()
+  const activityHtml =
+    activity.length > 0
+      ? `<details><summary>${esc(t.activityTitle(activity.length))}</summary><ul>${activity
+          .map(a => `<li><span>${esc(a.at.slice(0, 16).replace('T', ' '))} · ${esc(a.evidence === 'observed' ? t.observed : t.declared)}</span><br>${esc(a.text)}</li>`)
+          .join('')}</ul></details>`
+      : ''
 
-  const stale = input.stale
-    ? `<div class="warn">${esc(t.stale(input.stale.changedFiles, input.stale.modules.join(', ') || '—'))}</div>`
-    : ''
-  const commit = map.commit ? ` · <code>${esc(map.commit.slice(0, 10))}${map.isDirty ? '*' : ''}</code>` : ''
+  const lede = plan !== null ? plan.summary : t.noPlanLede
+  const commit = map.commit ? `${map.commit.slice(0, 7)}${map.isDirty ? '*' : ''}` : ''
 
   return `<!doctype html>
 <html lang="${input.lang === 'zh' ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(map.project)} · archgate</title><style>${CSS}</style></head>
 <body><main>
-<h1>${esc(map.project)}</h1>
-<p class="muted">${esc(t.map(map.project, map.revision, map.modules.length))}${commit} · ${esc(t.generated)} ${esc(input.now.slice(0, 19).replace('T', ' '))}</p>
-${stale}
-<div class="card"><div class="legend">${legend}</div><div class="canvas">${svg(map, states)}</div></div>
-<div class="card">${planHtml}</div>
-<h2>${esc(t.modules)}</h2>
-<div class="card"><table><tr><th>${esc(t.modules)}</th><th>${esc(t.responsibility)}</th><th>${esc(t.owns)}</th><th>${esc(t.evidence)}</th></tr>${rows}</table></div>
-${activity ? `<h2>${esc(t.activity)}</h2><div class="card"><ul>${activity}</ul></div>` : ''}
-</main></body></html>
+<header class="hero">
+<div class="eyebrow">${esc(t.head)} · ${esc(map.project)}</div>
+<h1 class="${tone}">${esc(t.headline[phase])}</h1>
+<p class="lede">${esc(lede)}</p>
+<ol class="steps">${steps}</ol>
+</header>
+<section><h2>${esc(t.statusTitle)}</h2><div class="group">${rows.join('')}</div>${callouts.join('')}${note}</section>
+${touched}
+<section><h2>${esc(t.diagramTitle)}</h2>
+<div class="callout info"><span class="ic">i</span><div><b>${esc(t.howTitle)}</b><ol>${t.how.map(s => `<li>${esc(s)}</li>`).join('')}</ol></div></div>
+<div class="legend">${legend}</div>
+<div class="group map"><div class="canvas">${diagram(map, states, numbers, input.lang)}</div><div class="detail" id="ag-detail" aria-live="polite"><p class="hint">${esc(t.hint)}</p></div></div>
+</section>
+<section><h2>${esc(t.partsTitle)}</h2><div class="group parts">${partsList}</div></section>
+<section><h2>${esc(t.termsTitle)}</h2><div class="terms">${t.terms.map(([k, v]) => `<div class="term"><b>${esc(k)}</b>${esc(v)}</div>`).join('')}</div></section>
+${activityHtml}
+<footer>${esc(t.foot(map.revision, commit, input.now.slice(0, 16).replace('T', ' ')))}</footer>
+</main>
+<script type="application/json" id="ag-data">${data}</script>
+<script>${SCRIPT}</script>
+</body></html>
 `
 }

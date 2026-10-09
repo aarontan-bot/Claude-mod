@@ -1,11 +1,13 @@
 {
   "version": 1,
-  "project": "Claude-mod (archgate)",
+  "project": "archgate 架构闸门",
   "modules": [
     {
       "id": "hooks",
-      "name": "Hooks 入口",
+      "name": "总控台",
       "responsibility": "注册工具和命令；拦截 Edit/Write，观测 Bash；绘制面板和文字版面板；向系统提示注入上下文",
+      "plain": "Claude 每做一个动作都先经过这里。它决定放行还是拦下。",
+      "group": "控制区",
       "paths": [
         "hooks/register.tsx",
         "hooks/hooks.json"
@@ -14,33 +16,19 @@
         {
           "path": "hooks/register.tsx",
           "lines": [
-            252,
-            285
+            264,
+            296
           ],
-          "note": "guard()：写入前判定并记录"
-        },
-        {
-          "path": "hooks/register.tsx",
-          "lines": [
-            287,
-            323
-          ],
-          "note": "describe()：文字版面板"
-        },
-        {
-          "path": "hooks/register.tsx",
-          "lines": [
-            331,
-            380
-          ],
-          "note": "register()：session.start 注册工具与命令"
+          "note": "guard()"
         }
       ]
     },
     {
       "id": "gate",
-      "name": "闸门规则",
-      "responsibility": "校验计划，判定一次写入是放行、拦截还是提醒，识别检查命令",
+      "name": "门卫规则",
+      "responsibility": "校验计划，判定写入是放行、拦截还是提醒，识别检查命令",
+      "plain": "判断一次修改在不在你批准的范围里。",
+      "group": "规则区",
       "paths": [
         "hooks/lib/gate.ts"
       ],
@@ -52,21 +40,15 @@
             147
           ],
           "note": "decideEdit()"
-        },
-        {
-          "path": "hooks/lib/gate.ts",
-          "lines": [
-            31,
-            64
-          ],
-          "note": "checkPlan()"
         }
       ]
     },
     {
       "id": "archmap",
-      "name": "架构图模型",
+      "name": "地图册",
       "responsibility": "校验架构图，计算文件归属、影响范围、版本差异和覆盖率",
+      "plain": "记住项目分成哪几块、每块管哪些文件。",
+      "group": "规则区",
       "paths": [
         "hooks/lib/map.ts"
       ],
@@ -75,24 +57,18 @@
           "path": "hooks/lib/map.ts",
           "lines": [
             19,
-            106
+            110
           ],
           "note": "checkMap()"
-        },
-        {
-          "path": "hooks/lib/map.ts",
-          "lines": [
-            118,
-            138
-          ],
-          "note": "reach()"
         }
       ]
     },
     {
       "id": "paths",
-      "name": "路径工具",
+      "name": "地址簿",
       "responsibility": "路径规范化、相对路径和 glob 匹配",
+      "plain": "把文件位置的写法统一，好对号入座。",
+      "group": "规则区",
       "paths": [
         "hooks/lib/paths.ts"
       ],
@@ -109,8 +85,10 @@
     },
     {
       "id": "report",
-      "name": "HTML 报告",
-      "responsibility": "把架构图、计划、改动和检查结果渲染成独立 HTML",
+      "name": "报告打印机",
+      "responsibility": "渲染苹果风 HTML 检查单：状态、进度、自上而下的架构图、部件表",
+      "plain": "把一切画成你正在看的这份检查单。",
+      "group": "输出区",
       "paths": [
         "hooks/lib/report.ts"
       ],
@@ -118,16 +96,16 @@
         {
           "path": "hooks/lib/report.ts",
           "lines": [
-            60,
-            130
+            56,
+            90
           ],
-          "note": "svg()：分层布局和连线"
+          "note": "bands()"
         },
         {
           "path": "hooks/lib/report.ts",
           "lines": [
-            132,
-            224
+            296,
+            330
           ],
           "note": "renderReport()"
         }
@@ -135,8 +113,10 @@
     },
     {
       "id": "prompt",
-      "name": "系统提示",
-      "responsibility": "生成注入系统提示的工作流说明、模块列表和当前计划",
+      "name": "给 Claude 的便条",
+      "responsibility": "生成注入系统提示的工作流说明、部件列表和当前计划",
+      "plain": "每次对话前提醒 Claude 当前的规则和计划。",
+      "group": "输出区",
       "paths": [
         "hooks/lib/prompt.ts"
       ],
@@ -145,15 +125,17 @@
           "path": "hooks/lib/prompt.ts",
           "lines": [
             8,
-            65
+            66
           ]
         }
       ]
     },
     {
       "id": "i18n",
-      "name": "中英文文案",
-      "responsibility": "面板、状态栏、文字版面板和报告的中英文文本",
+      "name": "翻译表",
+      "responsibility": "面板、文字版面板和报告的中英文文本",
+      "plain": "界面上所有文字的中文和英文，按简化写作规则写。",
+      "group": "输出区",
       "paths": [
         "hooks/lib/i18n.ts"
       ],
@@ -161,16 +143,18 @@
         {
           "path": "hooks/lib/i18n.ts",
           "lines": [
-            5,
-            113
+            9,
+            140
           ]
         }
       ]
     },
     {
       "id": "contract",
-      "name": "状态类型",
+      "name": "记录格式",
       "responsibility": "架构图、计划和会话状态的类型约定",
+      "plain": "规定计划和地图要记下哪些信息。",
+      "group": "资料区",
       "paths": [
         "types"
       ],
@@ -178,16 +162,18 @@
         {
           "path": "types/index.d.ts",
           "lines": [
-            1,
-            97
+            7,
+            18
           ]
         }
       ]
     },
     {
       "id": "manifest",
-      "name": "插件清单",
+      "name": "铭牌",
       "responsibility": "插件元数据、可配置项和 marketplace 条目",
+      "plain": "插件的名字、版本和你能调的设置。",
+      "group": "资料区",
       "paths": [
         ".claude-plugin"
       ],
@@ -203,8 +189,10 @@
     },
     {
       "id": "tests",
-      "name": "测试",
+      "name": "试车台",
       "responsibility": "纯逻辑测试和端到端流程测试",
+      "plain": "自动运行一遍主要功能，检查有没有坏。",
+      "group": "检查区",
       "paths": [
         "test"
       ],
@@ -213,28 +201,31 @@
           "path": "test/flow.test.ts",
           "lines": [
             83,
-            155
-          ],
-          "note": "完整流程"
+            160
+          ]
         }
       ]
     },
     {
       "id": "docs",
-      "name": "文档",
+      "name": "说明书",
       "responsibility": "README、许可证和忽略规则",
+      "plain": "给人看的安装和使用说明。",
+      "group": "资料区",
       "paths": [
         "README.md",
         "LICENSE",
-        ".gitignore"
+        ".gitignore",
+        ".archgate"
       ],
       "evidence": [
         {
           "path": "README.md",
           "lines": [
-            1,
-            149
-          ]
+            9,
+            46
+          ],
+          "note": "安装"
         }
       ]
     }
@@ -305,7 +296,8 @@
       "to": "report"
     }
   ],
-  "revision": 2,
-  "updatedAt": "2026-10-09T13:58:06.022Z",
-  "commit": "c639adf0ce8bfa7c57fcd277119d38789b9a1787"
+  "revision": 3,
+  "updatedAt": "2026-10-09T14:47:42.866Z",
+  "commit": "a38e38090a0c4723c8e58c55568ce0af27a5d4c0",
+  "isDirty": true
 }

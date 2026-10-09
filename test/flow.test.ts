@@ -122,7 +122,7 @@ test('map, plan, approve, edit, check, complete', async ($, on) => {
     origin: { kind: 'plugin', name: 'other' },
     presentation: { isFullscreen: false, columns: 80 },
   })
-  expect(sneaky.text).toContain('不算数')
+  expect(sneaky.text).toContain('命令无效')
 
   // the person approves from the pane
   const pane = await $.ui.mount({ plugin: 'archgate', surface: 'terminal', component: 'Pane', requestId: 'archgate', props: {} as never })
@@ -146,7 +146,7 @@ test('map, plan, approve, edit, check, complete', async ($, on) => {
 
   const done = await $.tool.call({ tool: 'mcp__archgate__archgate_complete', outcome: 'completed', note: 'done' })
   expect(String(done.result)).toContain('Unverified: npm run lint')
-  expect(w.status()).toContain('r1')
+  expect(w.status()).toContain('第 1 版')
 
   const report = w.files.get(`${ROOT}/.archgate/report.html`)!
   expect(report).toContain('<svg')
@@ -208,7 +208,7 @@ test('the pane draws on terminal and desktop', async ($, on) => {
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const empty = await $.ui.mount({ ...PANE, surface })
-    expect(await empty.find({ type: 'Text', text: /archgate_map/ })).toBeDefined()
+    expect(await empty.find({ type: 'Text', text: /还没有架构图/ })).toBeDefined()
     await empty.unmount()
   }
 
@@ -232,10 +232,10 @@ test('a client without a pane: text status and approval from the app', async ($,
 
   const app = { origin: { kind: 'sdk' as const }, presentation: { isFullscreen: false, columns: 80 } }
   const status = await $.command.run({ command: 'archgate', args: 'status', ...app })
-  expect(status.text).toContain('计划 #1 · 待确认')
-  expect(status.text).toContain('可能受影响（调用方）: api')
+  expect(status.text).toContain('【等你确认】')
+  expect(status.text).toContain('可能被连带影响：API')
   expect(status.text).toContain('/archgate approve')
-  expect(status.text).toContain('没有显示 archgate 面板')
+  expect(status.text).toContain('不显示 archgate 面板')
 
   const approved = await $.command.run({ command: 'archgate', args: 'approve', ...app })
   expect(approved.text).toContain('计划 #1 已确认')

@@ -66,11 +66,14 @@ export function checkMap(input: MapInput): Checked<Omit<ArchMap, 'revision' | 'u
       }
     }
     if (evidence.length === 0) warnings.push(`Module "${id}" cites no evidence.`)
+    if (!isText(m.plain)) warnings.push(`Module "${id}" has no plain sentence; the report falls back to its responsibility.`)
 
     modules.push({
       id,
       name: isText(m.name) ? m.name.trim() : id,
       responsibility: isText(m.responsibility) ? m.responsibility.trim() : '',
+      ...(isText(m.plain) ? { plain: m.plain.trim() } : {}),
+      ...(isText(m.group) ? { group: m.group.trim() } : {}),
       paths,
       ...(evidence.length > 0 ? { evidence } : {}),
     })
